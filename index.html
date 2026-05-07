@@ -87,7 +87,6 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   border-radius: 8px;
 }
 .news-item {
-  padding: 10px 12px;
   margin-bottom: 6px;
   background: #16182a;
   border-radius: 8px;
@@ -95,13 +94,18 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   transition: border-color 0.2s;
 }
 .news-item:active { border-left-color: #e94560; }
+.news-item a {
+  display: block;
+  padding: 10px 12px;
+  color: #ddd;
+  text-decoration: none;
+}
 .news-item h3 {
   font-size: 0.85rem;
   font-weight: 500;
   line-height: 1.5;
   margin-bottom: 4px;
 }
-.news-item a { color: #ddd; text-decoration: none; }
 .news-item .meta {
   font-size: 0.65rem;
   color: #666;

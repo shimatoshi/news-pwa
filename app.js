@@ -198,8 +198,10 @@ function renderNews(newsItems) {
     for (const item of items) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
       html += `<div class="news-item">
-          <h3><a href="${item.link}" target="_blank" rel="noopener">${item.title}</a></h3>
-          <div class="meta">${date}</div>
+          <a href="${item.link}" target="_blank" rel="noopener">
+            <h3>${item.title}</h3>
+            <div class="meta">${date}</div>
+          </a>
         </div>`;
     }
     html += `</div>`;
