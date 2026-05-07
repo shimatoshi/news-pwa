@@ -6,16 +6,26 @@ const STORE_NEWS = 'news';
 const STORE_WEATHER = 'weather';
 const STORE_META = 'meta';
 
-const WEATHER_REGIONS = [
-  { code: '016000', name: '北海道' },
-  { code: '040000', name: '宮城' },
-  { code: '130000', name: '東京' },
-  { code: '150000', name: '新潟' },
-  { code: '230000', name: '愛知' },
-  { code: '270000', name: '大阪' },
-  { code: '340000', name: '広島' },
-  { code: '400000', name: '福岡' },
-  { code: '471000', name: '沖縄' },
+// 気象庁の全予報区（地方→都道府県）
+const WEATHER_AREAS = [
+  { region: '北海道', codes: [
+    ['011000','宗谷'],['012000','上川・留萌'],['013000','網走・北見・紋別'],['014030','十勝'],
+    ['014100','釧路・根室'],['015000','胆振・日高'],['016000','石狩・空知・後志'],['017000','渡島・檜山']]},
+  { region: '東北', codes: [
+    ['020000','青森'],['030000','岩手'],['040000','宮城'],['050000','秋田'],['060000','山形'],['070000','福島']]},
+  { region: '関東甲信', codes: [
+    ['080000','茨城'],['090000','栃木'],['100000','群馬'],['110000','埼玉'],['120000','千葉'],
+    ['130000','東京'],['140000','神奈川'],['190000','山梨'],['200000','長野']]},
+  { region: '北陸', codes: [['150000','新潟'],['160000','富山'],['170000','石川'],['180000','福井']]},
+  { region: '東海', codes: [['210000','岐阜'],['220000','静岡'],['230000','愛知'],['240000','三重']]},
+  { region: '近畿', codes: [
+    ['250000','滋賀'],['260000','京都'],['270000','大阪'],['280000','兵庫'],['290000','奈良'],['300000','和歌山']]},
+  { region: '中国', codes: [['310000','鳥取'],['320000','島根'],['330000','岡山'],['340000','広島'],['350000','山口']]},
+  { region: '四国', codes: [['360000','徳島'],['370000','香川'],['380000','愛媛'],['390000','高知']]},
+  { region: '九州', codes: [
+    ['400000','福岡'],['410000','佐賀'],['420000','長崎'],['430000','熊本'],['440000','大分'],
+    ['450000','宮崎'],['460100','鹿児島']]},
+  { region: '沖縄', codes: [['471000','沖縄本島'],['473000','宮古島'],['474000','八重山']]},
 ];
 
 const CURRENTS_API_KEY = 'Bv9rfwwSo_5SIGS9p1wBlLGhD67QT7c8UQwWFEVo-JLPVSBT';
@@ -120,57 +130,81 @@ async function fetchNewsCategory(cat) {
   }));
 }
 
-async function fetchRegionWeather(region) {
-  const [overviewRes, forecastRes] = await Promise.all([
-    fetch(`https://www.jma.go.jp/bosai/forecast/data/overview_forecast/${region.code}.json`),
-    fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${region.code}.json`),
-  ]);
+async function fetchPrefWeather(code, name) {
+  const res = await fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`);
+  if (!res.ok) return null;
+  const fc = await res.json();
 
-  let overviewText = '', reportDatetime = '';
-  if (overviewRes.ok) {
-    const ov = await overviewRes.json();
-    overviewText = ov.text || '';
-    reportDatetime = ov.reportDatetime || '';
-  }
-
-  let days = [];
-  if (forecastRes.ok) {
-    const fc = await forecastRes.json();
-    if (fc[1]) {
-      const ts = fc[1].timeSeries[0];
-      const area = ts.areas[0];
-      const codes = area.weatherCodes || [];
-      const pops = area.pops || [];
-      const tsTemp = fc[1].timeSeries[1];
-      const tempArea = tsTemp ? tsTemp.areas[0] : {};
-      const maxTemps = tempArea.tempsMax || [];
-      const minTemps = tempArea.tempsMin || [];
-
-      days = ts.timeDefines.map((d, i) => {
-        const date = new Date(d);
-        const dow = DOW[date.getDay()];
-        return {
-          label: `${date.getMonth() + 1}/${date.getDate()}(${dow})`,
-          dow,
-          icon: (WEATHER_CODES[codes[i]] || ['', '❓'])[1],
-          weather: (WEATHER_CODES[codes[i]] || [`天気${codes[i]}`])[0],
-          pop: pops[i] || '',
-          tempMax: maxTemps[i] || '',
-          tempMin: minTemps[i] || '',
-        };
-      });
+  // 今日明日の天気テキスト + 6時間毎降水確率 + 気温
+  let todayTomorrow = [], hourlyPops = [], temps = {};
+  if (fc[0]) {
+    const ts0 = fc[0].timeSeries[0];
+    const area0 = ts0.areas[0];
+    todayTomorrow = ts0.timeDefines.map((d, i) => ({
+      date: d, weather: (area0.weathers || [])[i] || '',
+      code: (area0.weatherCodes || [])[i] || '',
+    }));
+    // 6時間毎の降水確率
+    if (fc[0].timeSeries[1]) {
+      const ts1 = fc[0].timeSeries[1];
+      const popArea = ts1.areas[0];
+      hourlyPops = ts1.timeDefines.map((d, i) => ({
+        time: d, pop: (popArea.pops || [])[i] || '',
+      }));
+    }
+    // 気温
+    if (fc[0].timeSeries[2]) {
+      const ts2 = fc[0].timeSeries[2];
+      const tempArea = ts2.areas[0];
+      const t = tempArea.temps || [];
+      temps = { min: t[0] || '', max: t[1] || '' };
     }
   }
 
-  if (!overviewText && days.length === 0) return null;
-  return { region: region.code, name: region.name, reportDatetime, overview: overviewText, days, fetchedAt: new Date().toISOString() };
+  // 週間予報
+  let weekly = [];
+  if (fc[1]) {
+    const ts = fc[1].timeSeries[0];
+    const area = ts.areas[0];
+    const codes = area.weatherCodes || [];
+    const pops = area.pops || [];
+    const tsTemp = fc[1].timeSeries[1];
+    const tempArea = tsTemp ? tsTemp.areas[0] : {};
+    const maxTemps = tempArea.tempsMax || [];
+    const minTemps = tempArea.tempsMin || [];
+
+    weekly = ts.timeDefines.map((d, i) => {
+      const date = new Date(d);
+      const dow = DOW[date.getDay()];
+      return {
+        label: `${date.getMonth() + 1}/${date.getDate()}(${dow})`, dow,
+        icon: (WEATHER_CODES[codes[i]] || ['', '❓'])[1],
+        weather: (WEATHER_CODES[codes[i]] || [`天気${codes[i]}`])[0],
+        pop: pops[i] || '', tempMax: maxTemps[i] || '', tempMin: minTemps[i] || '',
+      };
+    });
+  }
+
+  return { region: code, name, todayTomorrow, hourlyPops, temps, weekly, fetchedAt: new Date().toISOString() };
 }
 
 async function fetchWeather() {
-  const results = await Promise.all(
-    WEATHER_REGIONS.map(r => fetchRegionWeather(r).catch(() => null))
-  );
-  return results.filter(Boolean);
+  const allCodes = WEATHER_AREAS.flatMap(a => a.codes);
+  const total = allCodes.length;
+  let done = 0;
+  const results = [];
+
+  // 5並行で取得（サーバー負荷考慮）
+  for (let i = 0; i < allCodes.length; i += 5) {
+    const batch = allCodes.slice(i, i + 5);
+    const batchResults = await Promise.all(
+      batch.map(([code, name]) => fetchPrefWeather(code, name).catch(() => null))
+    );
+    results.push(...batchResults.filter(Boolean));
+    done += batch.length;
+    showProgress(`天気取得中... ${done}/${total}`);
+  }
+  return results;
 }
 
 // --- 更新判定 ---
@@ -224,39 +258,87 @@ function renderNews(newsItems) {
   panel.innerHTML = html;
 }
 
+function renderPrefWeather(item) {
+  let html = '';
+  // 今日明日の天気
+  if (item.todayTomorrow.length > 0) {
+    html += `<div class="today-weather">`;
+    for (const t of item.todayTomorrow) {
+      const date = new Date(t.date);
+      const label = `${date.getMonth()+1}/${date.getDate()}(${DOW[date.getDay()]})`;
+      const icon = (WEATHER_CODES[t.code] || ['','❓'])[1];
+      html += `<div class="today-item"><span class="today-label">${label}</span> ${icon} ${t.weather}</div>`;
+    }
+    if (item.temps.min || item.temps.max) {
+      html += `<div class="today-temp">気温: <span class="lo">${item.temps.min || '-'}°</span> / <span class="hi">${item.temps.max || '-'}°</span></div>`;
+    }
+    html += `</div>`;
+  }
+  // 6時間毎の降水確率
+  if (item.hourlyPops.length > 0) {
+    html += `<div class="hourly-pops"><div class="hourly-label">降水確率</div><div class="hourly-bar">`;
+    for (const h of item.hourlyPops) {
+      const date = new Date(h.time);
+      const hour = `${date.getHours()}時`;
+      const val = parseInt(h.pop) || 0;
+      const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
+      html += `<div class="hourly-cell">
+        <div class="hourly-time">${hour}</div>
+        <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
+        <div class="hourly-val">${h.pop}%</div>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+  // 週間予報
+  if (item.weekly.length > 0) {
+    html += `<div class="week-grid">`;
+    for (const d of item.weekly) {
+      const dayClass = d.dow === '土' ? 'sat' : d.dow === '日' ? 'sun' : '';
+      html += `<div class="day-card">
+        <div class="day-name ${dayClass}">${d.label}</div>
+        <div class="weather-icon">${d.icon}</div>
+        <div class="weather-text">${d.weather}</div>
+        ${d.tempMax || d.tempMin ? `<div class="temp"><span class="hi">${d.tempMax || '-'}°</span> / <span class="lo">${d.tempMin || '-'}°</span></div>` : ''}
+        ${d.pop ? `<div class="pop">${d.pop}%</div>` : ''}
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  return html;
+}
+
 function renderWeather(weatherItems) {
   const panel = document.getElementById('panel-weather');
   if (!weatherItems || weatherItems.length === 0) {
     panel.innerHTML = '<div class="empty">天気データなし</div>';
     return;
   }
+  // コードでルックアップ
+  const byCode = {};
+  for (const item of weatherItems) byCode[item.region] = item;
+
   let html = '';
-  for (const item of weatherItems) {
-    const reportDate = item.reportDatetime
-      ? new Date(item.reportDatetime).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : '';
-    html += `<div class="weather-region">
-      <div class="region-header">
-        <h3>${item.name}</h3>
-        <span class="report-time">${reportDate}</span>
+  for (const area of WEATHER_AREAS) {
+    const prefs = area.codes.filter(([code]) => byCode[code]);
+    if (prefs.length === 0) continue;
+
+    html += `<div class="weather-area">
+      <div class="area-header" onclick="this.parentElement.classList.toggle('open')">
+        <span class="area-arrow">▶</span>
+        <h3>${area.region}</h3>
+        <span class="area-count">${prefs.length}</span>
       </div>
-      <div class="region-body">`;
-    if (item.overview) {
-      html += `<div class="region-overview">${item.overview}</div>`;
-    }
-    if (item.days && item.days.length > 0) {
-      html += `<div class="week-grid">`;
-      for (const d of item.days) {
-        const dayClass = d.dow === '土' ? 'sat' : d.dow === '日' ? 'sun' : '';
-        html += `<div class="day-card">
-            <div class="day-name ${dayClass}">${d.label}</div>
-            <div class="weather-icon">${d.icon}</div>
-            <div class="weather-text">${d.weather}</div>
-            ${d.tempMax || d.tempMin ? `<div class="temp"><span class="hi">${d.tempMax || '-'}°</span> / <span class="lo">${d.tempMin || '-'}°</span></div>` : ''}
-            ${d.pop ? `<div class="pop">${d.pop}%</div>` : ''}
-          </div>`;
-      }
-      html += `</div>`;
+      <div class="area-body">`;
+    for (const [code, name] of prefs) {
+      const item = byCode[code];
+      html += `<div class="weather-pref">
+        <div class="pref-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>${name}</span>
+          <span class="pref-summary">${item.todayTomorrow[0] ? (WEATHER_CODES[item.todayTomorrow[0].code]||[''])[1] + ' ' + (WEATHER_CODES[item.todayTomorrow[0].code]||['?'])[0] : ''}</span>
+        </div>
+        <div class="pref-body">${renderPrefWeather(item)}</div>
+      </div>`;
     }
     html += `</div></div>`;
   }
@@ -272,36 +354,26 @@ async function refresh() {
   const btn = document.getElementById('btn-refresh');
   btn.classList.add('loading');
 
-  const totalSteps = NEWS_CATEGORIES.length + 1; // ニュース各カテゴリ + 天気
-  let doneSteps = 0;
-
-  showProgress(`取得中... 0/${totalSteps}`);
-
-  // 天気（全地域並行）
+  // 天気とニュースを並行
   const weatherPromise = fetchWeather().then(async (items) => {
     if (items.length > 0) {
       await dbPut(STORE_WEATHER, items);
       renderWeather(items);
     }
-    doneSteps++;
-    showProgress(`取得中... ${doneSteps}/${totalSteps}`);
-  }).catch(e => { console.error('天気取得失敗:', e); doneSteps++; });
+  }).catch(e => console.error('天気取得失敗:', e));
 
-  // ニュース（直列・逐次表示、進行状況付き）
   const newsPromise = (async () => {
     const allNews = [];
     for (let i = 0; i < NEWS_CATEGORIES.length; i++) {
       const cat = NEWS_CATEGORIES[i];
       try {
-        showProgress(`取得中... ${doneSteps}/${totalSteps} — ${cat.label}`);
+        showProgress(`ニュース取得中... ${i + 1}/${NEWS_CATEGORIES.length} — ${cat.label}`);
         const items = await fetchNewsCategory(cat);
         allNews.push(...items);
         renderNews(allNews);
       } catch (e) {
         console.warn(`ニュース取得失敗: ${cat.label}`, e);
       }
-      doneSteps++;
-      showProgress(`取得中... ${doneSteps}/${totalSteps}`);
     }
     if (allNews.length > 0) {
       await dbClear(STORE_NEWS);
