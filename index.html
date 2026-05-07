@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ニュース & 天気</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#16213e">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
+  background: #0f0f1a;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding-bottom: 80px;
+}
+header {
+  background: linear-gradient(135deg, #16213e, #1a1a3e);
+  padding: 14px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+header h1 { font-size: 1.1rem; font-weight: 700; }
+.status {
+  font-size: 0.7rem;
+  margin-top: 3px;
+  opacity: 0.7;
+}
+.status.online::before { content: '● '; color: #4caf50; }
+.status.offline::before { content: '● '; color: #ff9800; }
+
+/* タブ */
+.tabs {
+  display: flex;
+  background: #12122a;
+  position: sticky;
+  top: 53px;
+  z-index: 99;
+}
+.tab {
+  flex: 1;
+  padding: 11px 8px;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: #666;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: all 0.2s;
+  border-bottom: 3px solid transparent;
+}
+.tab.active { color: #fff; border-bottom-color: #e94560; }
+
+/* コンテンツ */
+.content { padding: 12px; }
+#panel-news, #panel-weather { display: none; }
+#panel-news.active, #panel-weather.active { display: block; }
+
+/* ニュース */
+.news-category {
+  margin-bottom: 20px;
+}
+.cat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  background: linear-gradient(90deg, #1e2a4a, transparent);
+  border-left: 3px solid #e94560;
+  border-radius: 0 6px 6px 0;
+}
+.cat-header h2 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #e94560;
+}
+.cat-header .count {
+  font-size: 0.65rem;
+  color: #666;
+  background: #0f0f1a;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+.news-item {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: #16182a;
+  border-radius: 8px;
+  border-left: 2px solid transparent;
+  transition: border-color 0.2s;
+}
+.news-item:active { border-left-color: #e94560; }
+.news-item h3 {
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.news-item a { color: #ddd; text-decoration: none; }
+.news-item .meta {
+  font-size: 0.65rem;
+  color: #666;
+}
+
+/* 天気 */
+.weather-region {
+  margin-bottom: 16px;
+  background: #16182a;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.region-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #1a2540, #1e2a4a);
+  cursor: pointer;
+}
+.region-header h3 { font-size: 0.95rem; font-weight: 700; }
+.region-header .report-time { font-size: 0.65rem; color: #888; }
+.region-body { padding: 0 10px 12px; }
+.region-overview {
+  font-size: 0.75rem;
+  color: #aaa;
+  line-height: 1.6;
+  padding: 10px 4px;
+  border-bottom: 1px solid #222;
+  margin-bottom: 10px;
+}
+.week-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 6px;
+}
+.day-card {
+  background: #0f1525;
+  border-radius: 8px;
+  padding: 8px 6px;
+  text-align: center;
+}
+.day-card .day-name {
+  font-size: 0.7rem;
+  color: #888;
+  margin-bottom: 4px;
+}
+.day-card .day-name.sat { color: #42a5f5; }
+.day-card .day-name.sun { color: #ef5350; }
+.day-card .weather-icon {
+  font-size: 1.4rem;
+  margin: 4px 0;
+}
+.day-card .weather-text {
+  font-size: 0.6rem;
+  color: #aaa;
+  margin-bottom: 4px;
+}
+.day-card .temp {
+  font-size: 0.7rem;
+}
+.day-card .temp .hi { color: #ff8a65; }
+.day-card .temp .lo { color: #64b5f6; }
+.day-card .pop {
+  font-size: 0.6rem;
+  color: #4fc3f7;
+  margin-top: 2px;
+}
+
+/* 更新ボタン */
+.btn-refresh {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #e94560, #c62a45);
+  color: white;
+  border: none;
+  font-size: 1.3rem;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(233,69,96,0.4);
+  z-index: 100;
+}
+.btn-refresh:active { transform: scale(0.9); }
+.btn-refresh.loading { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: #444;
+  font-size: 0.85rem;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>ニュース & 天気</h1>
+  <div class="status" id="status">確認中...</div>
+</header>
+<div class="tabs">
+  <button class="tab active" data-panel="news">ニュース</button>
+  <button class="tab" data-panel="weather">週間天気</button>
+</div>
+<div class="content">
+  <div id="panel-news" class="active">
+    <div class="empty">データなし — 更新ボタンを押してください</div>
+  </div>
+  <div id="panel-weather">
+    <div class="empty">データなし — 更新ボタンを押してください</div>
+  </div>
+</div>
+<button class="btn-refresh" id="btn-refresh" title="更新">↻</button>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="background:#1a1a2e;color:#fff;font-family:sans-serif;padding:20px;">
+<h2>キャッシュリセット中...</h2>
+<pre id="log"></pre>
+<script>
+const log = document.getElementById('log');
+function p(s) { log.textContent += s + '\n'; }
+(async () => {
+  // SW全解除
+  const regs = await navigator.serviceWorker.getRegistrations();
+  for (const r of regs) { await r.unregister(); p('SW解除: ' + r.scope); }
+  if (regs.length === 0) p('SW なし');
+  // キャッシュ全削除
+  const keys = await caches.keys();
+  for (const k of keys) { await caches.delete(k); p('キャッシュ削除: ' + k); }
+  if (keys.length === 0) p('キャッシュ なし');
+  // IndexedDB削除
+  try {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.deleteDatabase('news-weather-db');
+      req.onsuccess = resolve;
+      req.onerror = reject;
+    });
+    p('IndexedDB削除完了');
+  } catch(e) { p('IndexedDB削除エラー: ' + e); }
+
+  p('\n完了！3秒後にリダイレクト...');
+  setTimeout(() => { location.href = './index.html'; }, 3000);
+})();
+</script>
+</body>
+</html>
