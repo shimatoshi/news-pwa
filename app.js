@@ -1,4 +1,4 @@
-// ニュース & 天気 PWA - メインロジック
+// ニュース & 天気 PWA
 
 const DB_NAME = 'news-weather-db';
 const DB_VERSION = 1;
@@ -6,7 +6,6 @@ const STORE_NEWS = 'news';
 const STORE_WEATHER = 'weather';
 const STORE_META = 'meta';
 
-// 気象庁の地域コード（全国主要地域）
 const WEATHER_REGIONS = [
   { code: '016000', name: '北海道' },
   { code: '040000', name: '宮城' },
@@ -19,106 +18,12 @@ const WEATHER_REGIONS = [
   { code: '471000', name: '沖縄' },
 ];
 
-// NHKニュースRSSフィード
 const NEWS_FEEDS = [
   { url: 'https://www.nhk.or.jp/rss/news/cat0.xml', category: '主要' },
   { url: 'https://www.nhk.or.jp/rss/news/cat1.xml', category: '社会' },
   { url: 'https://www.nhk.or.jp/rss/news/cat3.xml', category: '科学・文化' },
 ];
 
-// --- IndexedDB ---
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_NEWS)) {
-        db.createObjectStore(STORE_NEWS, { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains(STORE_WEATHER)) {
-        db.createObjectStore(STORE_WEATHER, { keyPath: 'region' });
-      }
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: 'key' });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbPut(storeName, data) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    if (Array.isArray(data)) {
-      data.forEach(item => store.put(item));
-    } else {
-      store.put(data);
-    }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function dbGetAll(storeName) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbGet(storeName, key) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const req = store.get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// --- フェッチ ---
-function parseRSS(text, category) {
-  const items = [];
-  const parser = new DOMParser();
-  const xml = parser.parseFromString(text, 'text/xml');
-  xml.querySelectorAll('item').forEach((item, i) => {
-    items.push({
-      id: `${category}-${i}-${Date.now()}`,
-      title: item.querySelector('title')?.textContent || '',
-      link: item.querySelector('link')?.textContent || '',
-      pubDate: item.querySelector('pubDate')?.textContent || '',
-      category,
-      fetchedAt: new Date().toISOString(),
-    });
-  });
-  return items;
-}
-
-async function fetchSingleFeed(feed) {
-  const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const data = await res.json();
-  if (data.status !== 'ok' || !data.items) return [];
-  return data.items.map((item, i) => ({
-    id: `${feed.category}-${i}-${Date.now()}`,
-    title: item.title || '',
-    link: item.link || '',
-    pubDate: item.pubDate || '',
-    category: feed.category,
-    fetchedAt: new Date().toISOString(),
-  }));
-}
-
-// 天気コード→テキスト＆アイコン
 const WEATHER_CODES = {
   '100': ['晴', '☀️'], '101': ['晴時々曇', '🌤️'], '102': ['晴一時雨', '🌦️'], '103': ['晴時々雨', '🌦️'],
   '104': ['晴一時雪', '🌨️'], '105': ['晴時々雪', '🌨️'],
@@ -135,77 +40,126 @@ const WEATHER_CODES = {
   '411': ['雪後晴', '🌨️'], '413': ['雪後曇', '🌨️'], '414': ['雪後雨', '🌨️'],
 };
 
-function weatherCodeToText(code) {
-  return WEATHER_CODES[code] ? WEATHER_CODES[code][0] : `天気${code}`;
+const CAT_ICONS = { '主要': '📰', '社会': '🏛️', '科学・文化': '🔬' };
+const DOW = ['日','月','火','水','木','金','土'];
+
+// --- IndexedDB（シングルトン接続） ---
+let dbInstance = null;
+
+function getDB() {
+  if (dbInstance) return Promise.resolve(dbInstance);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      [STORE_NEWS, STORE_WEATHER, STORE_META].forEach(name => {
+        if (!db.objectStoreNames.contains(name)) {
+          db.createObjectStore(name, { keyPath: name === STORE_META ? 'key' : name === STORE_NEWS ? 'id' : 'region' });
+        }
+      });
+    };
+    req.onsuccess = () => { dbInstance = req.result; resolve(dbInstance); };
+    req.onerror = () => reject(req.error);
+  });
 }
-function weatherCodeToIcon(code) {
-  return WEATHER_CODES[code] ? WEATHER_CODES[code][1] : '❓';
+
+async function dbPut(storeName, data) {
+  const db = await getDB();
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  (Array.isArray(data) ? data : [data]).forEach(item => store.put(item));
+  return new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+}
+
+async function dbClear(storeName) {
+  const db = await getDB();
+  const tx = db.transaction(storeName, 'readwrite');
+  tx.objectStore(storeName).clear();
+  return new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+}
+
+async function dbGetAll(storeName) {
+  const db = await getDB();
+  const tx = db.transaction(storeName, 'readonly');
+  const req = tx.objectStore(storeName).getAll();
+  return new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+}
+
+async function dbGet(storeName, key) {
+  const db = await getDB();
+  const tx = db.transaction(storeName, 'readonly');
+  const req = tx.objectStore(storeName).get(key);
+  return new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+}
+
+// --- フェッチ ---
+async function fetchSingleFeed(feed) {
+  const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const data = await res.json();
+  if (data.status !== 'ok' || !data.items) return [];
+  return data.items.map((item, i) => ({
+    id: `${feed.category}-${i}`,
+    title: item.title || '',
+    link: item.link || '',
+    pubDate: item.pubDate || '',
+    category: feed.category,
+    fetchedAt: new Date().toISOString(),
+  }));
+}
+
+async function fetchRegionWeather(region) {
+  const [overviewRes, forecastRes] = await Promise.all([
+    fetch(`https://www.jma.go.jp/bosai/forecast/data/overview_forecast/${region.code}.json`),
+    fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${region.code}.json`),
+  ]);
+
+  let overviewText = '', reportDatetime = '';
+  if (overviewRes.ok) {
+    const ov = await overviewRes.json();
+    overviewText = ov.text || '';
+    reportDatetime = ov.reportDatetime || '';
+  }
+
+  let days = [];
+  if (forecastRes.ok) {
+    const fc = await forecastRes.json();
+    if (fc[1]) {
+      const ts = fc[1].timeSeries[0];
+      const area = ts.areas[0];
+      const codes = area.weatherCodes || [];
+      const pops = area.pops || [];
+      const tsTemp = fc[1].timeSeries[1];
+      const tempArea = tsTemp ? tsTemp.areas[0] : {};
+      const maxTemps = tempArea.tempsMax || [];
+      const minTemps = tempArea.tempsMin || [];
+
+      days = ts.timeDefines.map((d, i) => {
+        const date = new Date(d);
+        const dow = DOW[date.getDay()];
+        return {
+          label: `${date.getMonth() + 1}/${date.getDate()}(${dow})`,
+          dow,
+          icon: (WEATHER_CODES[codes[i]] || ['', '❓'])[1],
+          weather: (WEATHER_CODES[codes[i]] || [`天気${codes[i]}`])[0],
+          pop: pops[i] || '',
+          tempMax: maxTemps[i] || '',
+          tempMin: minTemps[i] || '',
+        };
+      });
+    }
+  }
+
+  if (!overviewText && days.length === 0) return null;
+  return { region: region.code, name: region.name, reportDatetime, overview: overviewText, days, fetchedAt: new Date().toISOString() };
 }
 
 async function fetchWeather() {
-  const results = [];
-  for (const region of WEATHER_REGIONS) {
-    try {
-      // 概況テキスト取得
-      const overviewUrl = `https://www.jma.go.jp/bosai/forecast/data/overview_forecast/${region.code}.json`;
-      const overviewRes = await fetch(overviewUrl);
-      let overviewText = '';
-      let reportDatetime = '';
-      if (overviewRes.ok) {
-        const ov = await overviewRes.json();
-        overviewText = ov.text || '';
-        reportDatetime = ov.reportDatetime || '';
-      }
-
-      // 週間予報データ取得
-      const forecastUrl = `https://www.jma.go.jp/bosai/forecast/data/forecast/${region.code}.json`;
-      const forecastRes = await fetch(forecastUrl);
-      let days = [];
-      if (forecastRes.ok) {
-        const fc = await forecastRes.json();
-        // fc[1]: 週間予報
-        if (fc[1]) {
-          const ts = fc[1].timeSeries[0];
-          const area = ts.areas[0];
-          const codes = area.weatherCodes || [];
-          const pops = area.pops || [];
-          const tsTemp = fc[1].timeSeries[1];
-          const tempArea = tsTemp ? tsTemp.areas[0] : {};
-          const maxTemps = tempArea.tempsMax || [];
-          const minTemps = tempArea.tempsMin || [];
-
-          days = ts.timeDefines.map((d, i) => {
-            const date = new Date(d);
-            const dow = ['日','月','火','水','木','金','土'][date.getDay()];
-            const label = `${date.getMonth()+1}/${date.getDate()}(${dow})`;
-            return {
-              label,
-              dow,
-              icon: weatherCodeToIcon(codes[i]),
-              weather: weatherCodeToText(codes[i]),
-              pop: pops[i] || '',
-              tempMax: maxTemps[i] || '',
-              tempMin: minTemps[i] || '',
-            };
-          });
-        }
-      }
-
-      if (overviewText || days.length > 0) {
-        results.push({
-          region: region.code,
-          name: region.name,
-          reportDatetime,
-          overview: overviewText,
-          days,
-          fetchedAt: new Date().toISOString(),
-        });
-      }
-    } catch (e) {
-      console.warn(`天気取得失敗: ${region.name}`, e);
-    }
-  }
-  return results;
+  const results = await Promise.all(
+    WEATHER_REGIONS.map(r => fetchRegionWeather(r).catch(() => null))
+  );
+  return results.filter(Boolean);
 }
 
 // --- 更新判定 ---
@@ -219,18 +173,10 @@ function getTimeSlot() {
 async function shouldAutoFetch() {
   const meta = await dbGet(STORE_META, 'lastFetch');
   if (!meta) return true;
-  const lastSlot = meta.slot;
-  const lastDate = meta.date;
-  const today = new Date().toDateString();
-  const currentSlot = getTimeSlot();
-  // 同日同スロットなら取得済み
-  if (lastDate === today && lastSlot === currentSlot) return false;
-  return true;
+  return !(meta.date === new Date().toDateString() && meta.slot === getTimeSlot());
 }
 
 // --- 表示 ---
-const CAT_ICONS = { '主要': '📰', '社会': '🏛️', '科学・文化': '🔬' };
-
 function renderNews(newsItems) {
   const panel = document.getElementById('panel-news');
   if (!newsItems || newsItems.length === 0) {
@@ -239,8 +185,7 @@ function renderNews(newsItems) {
   }
   const grouped = {};
   newsItems.forEach(item => {
-    if (!grouped[item.category]) grouped[item.category] = [];
-    grouped[item.category].push(item);
+    (grouped[item.category] ||= []).push(item);
   });
 
   let html = '';
@@ -250,14 +195,13 @@ function renderNews(newsItems) {
         <h2>${CAT_ICONS[cat] || '📄'} ${cat}</h2>
         <span class="count">${items.length}件</span>
       </div>`;
-    items.forEach(item => {
+    for (const item of items) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-      html += `
-        <div class="news-item">
+      html += `<div class="news-item">
           <h3><a href="${item.link}" target="_blank" rel="noopener">${item.title}</a></h3>
           <div class="meta">${date}</div>
         </div>`;
-    });
+    }
     html += `</div>`;
   }
   panel.innerHTML = html;
@@ -270,7 +214,7 @@ function renderWeather(weatherItems) {
     return;
   }
   let html = '';
-  weatherItems.forEach(item => {
+  for (const item of weatherItems) {
     const reportDate = item.reportDatetime
       ? new Date(item.reportDatetime).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
       : '';
@@ -285,31 +229,33 @@ function renderWeather(weatherItems) {
     }
     if (item.days && item.days.length > 0) {
       html += `<div class="week-grid">`;
-      item.days.forEach(d => {
-        const dow = d.dow;
-        const dayClass = dow === '土' ? 'sat' : dow === '日' ? 'sun' : '';
-        html += `
-          <div class="day-card">
+      for (const d of item.days) {
+        const dayClass = d.dow === '土' ? 'sat' : d.dow === '日' ? 'sun' : '';
+        html += `<div class="day-card">
             <div class="day-name ${dayClass}">${d.label}</div>
             <div class="weather-icon">${d.icon}</div>
             <div class="weather-text">${d.weather}</div>
             ${d.tempMax || d.tempMin ? `<div class="temp"><span class="hi">${d.tempMax || '-'}°</span> / <span class="lo">${d.tempMin || '-'}°</span></div>` : ''}
             ${d.pop ? `<div class="pop">${d.pop}%</div>` : ''}
           </div>`;
-      });
+      }
       html += `</div>`;
     }
     html += `</div></div>`;
-  });
+  }
   panel.innerHTML = html;
 }
 
 // --- メイン ---
+let refreshing = false;
+
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   const btn = document.getElementById('btn-refresh');
   btn.classList.add('loading');
 
-  // 天気とニュースを並行開始（天気は即表示）
+  // 天気（全地域並行）とニュース（直列・逐次表示）を同時開始
   const weatherPromise = fetchWeather().then(async (items) => {
     if (items.length > 0) {
       await dbPut(STORE_WEATHER, items);
@@ -317,30 +263,25 @@ async function refresh() {
     }
   }).catch(e => console.error('天気取得失敗:', e));
 
-  // ニュースは直列取得（プロキシのレートリミット回避）だが取れた順に逐次表示
   const newsPromise = (async () => {
     const allNews = [];
     for (const feed of NEWS_FEEDS) {
       try {
         const items = await fetchSingleFeed(feed);
         allNews.push(...items);
-        renderNews(allNews); // 取れたフィードから順次表示
+        renderNews(allNews);
       } catch (e) {
         console.warn(`RSS取得失敗: ${feed.category}`, e);
       }
     }
     if (allNews.length > 0) {
-      const db = await openDB();
-      const tx = db.transaction(STORE_NEWS, 'readwrite');
-      tx.objectStore(STORE_NEWS).clear();
-      await new Promise(r => { tx.oncomplete = r; });
+      await dbClear(STORE_NEWS);
       await dbPut(STORE_NEWS, allNews);
     }
   })();
 
   await Promise.all([weatherPromise, newsPromise]);
 
-  // 更新メタ保存
   await dbPut(STORE_META, {
     key: 'lastFetch',
     slot: getTimeSlot(),
@@ -350,6 +291,7 @@ async function refresh() {
 
   updateStatus();
   btn.classList.remove('loading');
+  refreshing = false;
 }
 
 async function loadCached() {
@@ -365,10 +307,7 @@ async function updateStatus() {
   const el = document.getElementById('status');
   const online = navigator.onLine;
   const meta = await dbGet(STORE_META, 'lastFetch');
-  const lastTime = meta ? new Date(meta.timestamp).toLocaleString('ja-JP', {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-  }) : 'なし';
-
+  const lastTime = meta ? new Date(meta.timestamp).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'なし';
   el.textContent = `${online ? 'オンライン' : 'オフライン'} | 最終更新: ${lastTime}`;
   el.className = `status ${online ? 'online' : 'offline'}`;
 }
@@ -384,23 +323,17 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// --- イベント ---
+// --- 初期化 ---
 document.getElementById('btn-refresh').addEventListener('click', refresh);
 window.addEventListener('online', updateStatus);
 window.addEventListener('offline', updateStatus);
 
-// --- 初期化 ---
 (async () => {
-  // Service Worker登録
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(e => console.warn('SW登録失敗:', e));
   }
-
-  // キャッシュ表示
   await loadCached();
   updateStatus();
-
-  // オンラインかつ未取得スロットなら自動取得
   if (navigator.onLine && await shouldAutoFetch()) {
     refresh();
   }
