@@ -18,10 +18,13 @@ const WEATHER_REGIONS = [
   { code: '471000', name: '沖縄' },
 ];
 
-const NEWS_FEEDS = [
-  { url: 'https://www.nhk.or.jp/rss/news/cat0.xml', category: '主要' },
-  { url: 'https://www.nhk.or.jp/rss/news/cat1.xml', category: '社会' },
-  { url: 'https://www.nhk.or.jp/rss/news/cat3.xml', category: '科学・文化' },
+const CURRENTS_API_KEY = 'Bv9rfwwSo_5SIGS9p1wBlLGhD67QT7c8UQwWFEVo-JLPVSBT';
+const NEWS_CATEGORIES = [
+  { query: 'category=general', label: '総合' },
+  { query: 'category=politics', label: '政治' },
+  { query: 'category=technology', label: 'テクノロジー' },
+  { query: 'category=science', label: '科学' },
+  { query: 'category=business', label: '経済' },
 ];
 
 const WEATHER_CODES = {
@@ -40,7 +43,7 @@ const WEATHER_CODES = {
   '411': ['雪後晴', '🌨️'], '413': ['雪後曇', '🌨️'], '414': ['雪後雨', '🌨️'],
 };
 
-const CAT_ICONS = { '主要': '📰', '社会': '🏛️', '科学・文化': '🔬' };
+const CAT_ICONS = { '総合': '📰', '政治': '🏛️', 'テクノロジー': '💻', '科学': '🔬', '経済': '💹' };
 const DOW = ['日','月','火','水','木','金','土'];
 
 // --- IndexedDB（シングルトン接続） ---
@@ -92,20 +95,27 @@ async function dbGet(storeName, key) {
   return new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
 }
 
+// --- 進行状況 ---
+function showProgress(text) {
+  const el = document.getElementById('progress');
+  if (el) { el.textContent = text; el.style.display = text ? 'block' : 'none'; }
+}
+
 // --- フェッチ ---
-async function fetchSingleFeed(feed) {
-  const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`;
+async function fetchNewsCategory(cat) {
+  const url = `https://api.currentsapi.services/v1/latest-news?language=ja&${cat.query}&apiKey=${CURRENTS_API_KEY}`;
   const res = await fetch(url);
   if (!res.ok) return [];
   const data = await res.json();
-  if (data.status !== 'ok' || !data.items) return [];
-  return data.items.map((item, i) => ({
-    id: `${feed.category}-${i}`,
-    title: item.title || '',
-    link: item.link || '',
-    pubDate: item.pubDate || '',
+  if (data.status !== 'ok' || !data.news) return [];
+  return data.news.map((item, i) => ({
+    id: `${cat.label}-${i}`,
+    title: (item.title || '').replace(/ - [^-]+$/, ''),
+    link: item.url || '',
+    pubDate: item.published || '',
     description: item.description || '',
-    category: feed.category,
+    source: item.author || '',
+    category: cat.label,
     fetchedAt: new Date().toISOString(),
   }));
 }
@@ -201,11 +211,11 @@ function renderNews(newsItems) {
       html += `<div class="news-item">
           <div class="news-header" onclick="this.parentElement.classList.toggle('open')">
             <h3>${item.title}</h3>
-            <div class="meta">${date}</div>
+            <div class="meta">${date}${item.source ? ' · ' + item.source : ''}</div>
           </div>
           <div class="news-body">
             <p>${item.description || '概要なし'}</p>
-            <a href="${item.link}" target="_blank" rel="noopener" class="read-more">全文を読む →</a>
+            <a href="${item.link}" target="_blank" rel="noopener" class="read-more">元記事を読む →</a>
           </div>
         </div>`;
     }
@@ -262,24 +272,36 @@ async function refresh() {
   const btn = document.getElementById('btn-refresh');
   btn.classList.add('loading');
 
-  // 天気（全地域並行）とニュース（直列・逐次表示）を同時開始
+  const totalSteps = NEWS_CATEGORIES.length + 1; // ニュース各カテゴリ + 天気
+  let doneSteps = 0;
+
+  showProgress(`取得中... 0/${totalSteps}`);
+
+  // 天気（全地域並行）
   const weatherPromise = fetchWeather().then(async (items) => {
     if (items.length > 0) {
       await dbPut(STORE_WEATHER, items);
       renderWeather(items);
     }
-  }).catch(e => console.error('天気取得失敗:', e));
+    doneSteps++;
+    showProgress(`取得中... ${doneSteps}/${totalSteps}`);
+  }).catch(e => { console.error('天気取得失敗:', e); doneSteps++; });
 
+  // ニュース（直列・逐次表示、進行状況付き）
   const newsPromise = (async () => {
     const allNews = [];
-    for (const feed of NEWS_FEEDS) {
+    for (let i = 0; i < NEWS_CATEGORIES.length; i++) {
+      const cat = NEWS_CATEGORIES[i];
       try {
-        const items = await fetchSingleFeed(feed);
+        showProgress(`取得中... ${doneSteps}/${totalSteps} — ${cat.label}`);
+        const items = await fetchNewsCategory(cat);
         allNews.push(...items);
         renderNews(allNews);
       } catch (e) {
-        console.warn(`RSS取得失敗: ${feed.category}`, e);
+        console.warn(`ニュース取得失敗: ${cat.label}`, e);
       }
+      doneSteps++;
+      showProgress(`取得中... ${doneSteps}/${totalSteps}`);
     }
     if (allNews.length > 0) {
       await dbClear(STORE_NEWS);
@@ -288,6 +310,7 @@ async function refresh() {
   })();
 
   await Promise.all([weatherPromise, newsPromise]);
+  showProgress('');
 
   await dbPut(STORE_META, {
     key: 'lastFetch',

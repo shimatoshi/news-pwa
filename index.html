@@ -210,6 +210,13 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .btn-refresh:active { transform: scale(0.9); }
 .btn-refresh.loading { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+#progress {
+  background: #1a1a3e;
+  color: #4fc3f7;
+  font-size: 0.75rem;
+  padding: 8px 16px;
+  text-align: center;
+}
 .empty {
   text-align: center;
   padding: 40px 20px;
@@ -227,6 +234,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   <button class="tab active" data-panel="news">ニュース</button>
   <button class="tab" data-panel="weather">週間天気</button>
 </div>
+<div id="progress" style="display:none;"></div>
 <div class="content">
   <div id="panel-news" class="active">
     <div class="empty">データなし — 更新ボタンを押してください</div>
