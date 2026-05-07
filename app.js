@@ -204,7 +204,7 @@ function renderNews(newsItems) {
             <div class="meta">${date}</div>
           </div>
           <div class="news-body">
-            <p>${item.description}</p>
+            <p>${item.description || '概要なし'}</p>
             <a href="${item.link}" target="_blank" rel="noopener" class="read-more">全文を読む →</a>
           </div>
         </div>`;
