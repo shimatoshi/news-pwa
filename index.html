@@ -93,12 +93,10 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   border-left: 2px solid transparent;
   transition: border-color 0.2s;
 }
-.news-item:active { border-left-color: #e94560; }
-.news-item a {
-  display: block;
+.news-item.open { border-left-color: #e94560; }
+.news-header {
   padding: 10px 12px;
-  color: #ddd;
-  text-decoration: none;
+  cursor: pointer;
 }
 .news-item h3 {
   font-size: 0.85rem;
@@ -109,6 +107,24 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .news-item .meta {
   font-size: 0.65rem;
   color: #666;
+}
+.news-body {
+  display: none;
+  padding: 0 12px 12px;
+}
+.news-item.open .news-body { display: block; }
+.news-body p {
+  font-size: 0.8rem;
+  color: #bbb;
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+.read-more {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: #e94560;
+  text-decoration: none;
+  padding: 4px 0;
 }
 
 /* 天気 */

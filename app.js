@@ -104,6 +104,7 @@ async function fetchSingleFeed(feed) {
     title: item.title || '',
     link: item.link || '',
     pubDate: item.pubDate || '',
+    description: item.description || '',
     category: feed.category,
     fetchedAt: new Date().toISOString(),
   }));
@@ -198,10 +199,14 @@ function renderNews(newsItems) {
     for (const item of items) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
       html += `<div class="news-item">
-          <a href="${item.link}" target="_blank" rel="noopener">
+          <div class="news-header" onclick="this.parentElement.classList.toggle('open')">
             <h3>${item.title}</h3>
             <div class="meta">${date}</div>
-          </a>
+          </div>
+          <div class="news-body">
+            <p>${item.description}</p>
+            <a href="${item.link}" target="_blank" rel="noopener" class="read-more">全文を読む →</a>
+          </div>
         </div>`;
     }
     html += `</div>`;
