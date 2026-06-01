@@ -259,43 +259,75 @@ async function fetchPrefWeather(code, name) {
       hourlyPops: popByCode[a.area.code] || [],
     }));
 
-    // 気温（観測点ごと）: temps = [今日最低, 今日最高, 明日最低, 明日最高] 想定
+    // 気温（観測点＝予報地点ごと）: temps = [今日最低, 今日最高, 明日最低, 明日最高] 想定
+    // code は気象庁の観測所コード（アメダステーブルで緯度経度に変換 → Open-Meteoで地点別週間予報）
     if (ts2) {
       tempPoints = ts2.areas.map(a => {
         const t = a.temps || [];
-        return { name: a.area.name, min: t[0] || '', max: t[1] || '' };
-      }).filter(p => p.min || p.max);
+        return { name: a.area.name, code: a.area.code, min: t[0] || '', max: t[1] || '', weekly: [] };
+      });
     }
   }
 
-  // --- 週間予報：予報区ごと（多くは県全体、奄美等で複数） ---
-  let weekly = [];
-  if (fc[1]) {
-    const ts = fc[1].timeSeries[0];
-    const tsTemp = fc[1].timeSeries[1];
-    const tempAreas = tsTemp ? tsTemp.areas : [];
+  // 週間予報はJMAだと府県単位で粗く「どの地点か」が曖昧なので、
+  // 各予報地点(tempPoints)ごとにOpen-Meteoで取得する（attachPointWeeklyで後付け）
+  return { region: code, name, subAreas, tempPoints, fetchedAt: new Date().toISOString() };
+}
 
-    weekly = ts.areas.map((area, ai) => {
-      const codes = area.weatherCodes || [];
-      const pops = area.pops || [];
-      const tempArea = tempAreas[ai] || tempAreas[0] || {};
-      const maxTemps = tempArea.tempsMax || [];
-      const minTemps = tempArea.tempsMin || [];
-      const days = ts.timeDefines.map((d, i) => {
-        const date = new Date(d);
-        const dow = DOW[date.getDay()];
-        return {
-          label: `${date.getMonth() + 1}/${date.getDate()}(${dow})`, dow,
-          icon: (WEATHER_CODES[codes[i]] || ['', '❓'])[1],
-          weather: (WEATHER_CODES[codes[i]] || [`天気${codes[i]}`])[0],
-          pop: pops[i] || '', tempMax: maxTemps[i] || '', tempMin: minTemps[i] || '',
-        };
-      });
-      return { areaName: area.area.name, days };
-    });
+// アメダス観測所テーブル（コード→緯度経度）。一度取得したらキャッシュ。
+let _amedasTable = null;
+async function getAmedasTable() {
+  if (_amedasTable) return _amedasTable;
+  const cached = await dbGet(STORE_META, 'amedas').catch(() => null);
+  if (cached && cached.table) { _amedasTable = cached.table; return _amedasTable; }
+  const res = await fetch('https://www.jma.go.jp/bosai/amedas/const/amedastable.json');
+  if (!res.ok) throw new Error('amedastable ' + res.status);
+  _amedasTable = await res.json();
+  dbPut(STORE_META, { key: 'amedas', table: _amedasTable, fetchedAt: new Date().toISOString() }).catch(() => {});
+  return _amedasTable;
+}
+
+// 全予報地点の週間予報をOpen-Meteoで取得して tempPoints[].weekly に格納
+async function attachPointWeekly(results) {
+  let table;
+  try { table = await getAmedasTable(); } catch (e) { console.warn('アメダステーブル取得失敗:', e); return; }
+
+  const pts = [];
+  for (const r of results) {
+    for (const tp of (r.tempPoints || [])) {
+      const st = table[tp.code];
+      if (st && st.lat && st.lon) {
+        pts.push({ lat: st.lat[0] + st.lat[1] / 60, lon: st.lon[0] + st.lon[1] / 60, tp });
+      }
+    }
   }
+  if (!pts.length) return;
 
-  return { region: code, name, subAreas, tempPoints, weekly, fetchedAt: new Date().toISOString() };
+  const BATCH = 100;
+  for (let i = 0; i < pts.length; i += BATCH) {
+    const batch = pts.slice(i, i + BATCH);
+    const lats = batch.map(p => p.lat.toFixed(4)).join(',');
+    const lons = batch.map(p => p.lon.toFixed(4)).join(',');
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}`
+      + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`
+      + `&timezone=Asia%2FTokyo&forecast_days=7`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      let arr = await res.json();
+      if (!Array.isArray(arr)) arr = [arr]; // 1地点だとオブジェクトで返る
+      arr.forEach((loc, j) => {
+        const dl = loc.daily;
+        if (!dl || !batch[j]) return;
+        batch[j].tp.weekly = dl.time.map((t, k) => ({
+          date: t, code: dl.weather_code[k],
+          tmax: dl.temperature_2m_max[k], tmin: dl.temperature_2m_min[k],
+          pop: dl.precipitation_probability_max[k],
+        }));
+      });
+    } catch (e) { /* このバッチはスキップ */ }
+    showProgress(`週間予報取得中... ${Math.min(i + BATCH, pts.length)}/${pts.length}地点`);
+  }
 }
 
 async function fetchWeather() {
@@ -314,6 +346,9 @@ async function fetchWeather() {
     done += batch.length;
     showProgress(`天気取得中... ${done}/${total}`);
   }
+
+  // 各予報地点の週間予報（Open-Meteo）を付与
+  await attachPointWeekly(results);
   return results;
 }
 
@@ -464,27 +499,28 @@ function renderPrefWeather(item) {
     html += renderHourlyPops(sub.hourlyPops);
     html += `</div>`;
   }
-  // 気温（観測点ごと）
-  if (item.tempPoints && item.tempPoints.length > 0) {
-    html += `<div class="temp-points"><div class="hourly-label">気温（最低/最高）</div><div class="temp-row">`;
-    for (const p of item.tempPoints) {
-      html += `<span class="temp-pt"><span class="pt-name">${p.name}</span> <span class="lo">${p.min || '-'}°</span>/<span class="hi">${p.max || '-'}°</span></span>`;
-    }
-    html += `</div></div>`;
-  }
-  // 週間予報（予報区ごと）
-  for (const w of (item.weekly || [])) {
-    if (item.weekly.length > 1) html += `<div class="week-area-name">${w.areaName}</div>`;
-    html += `<div class="week-grid">`;
-    for (const d of w.days) {
-      const dayClass = d.dow === '土' ? 'sat' : d.dow === '日' ? 'sun' : '';
-      html += `<div class="day-card">
-        <div class="day-name ${dayClass}">${d.label}</div>
-        <div class="weather-icon">${d.icon}</div>
-        <div class="weather-text">${d.weather}</div>
-        ${d.tempMax || d.tempMin ? `<div class="temp"><span class="hi">${d.tempMax || '-'}°</span> / <span class="lo">${d.tempMin || '-'}°</span></div>` : ''}
-        ${d.pop ? `<div class="pop">${d.pop}%</div>` : ''}
-      </div>`;
+  // 週間予報：予報地点ごと（千葉 / 銚子 / 館山 …）。どの地点の予報か明示。
+  for (const p of (item.tempPoints || [])) {
+    const today = (p.min || p.max) ? ` <span class="point-now">今日 ${p.min || '-'}°/${p.max || '-'}°</span>` : '';
+    html += `<div class="point-week"><div class="point-name">📍 ${p.name}${today}</div>`;
+    if (p.weekly && p.weekly.length > 0) {
+      html += `<div class="week-grid">`;
+      for (const d of p.weekly) {
+        const date = new Date(d.date);
+        const dow = DOW[date.getDay()];
+        const dayClass = dow === '土' ? 'sat' : dow === '日' ? 'sun' : '';
+        const [wtxt, wic] = wmo(d.code);
+        html += `<div class="day-card">
+          <div class="day-name ${dayClass}">${date.getMonth()+1}/${date.getDate()}(${dow})</div>
+          <div class="weather-icon">${wic}</div>
+          <div class="weather-text">${wtxt}</div>
+          <div class="temp"><span class="hi">${Math.round(d.tmax)}°</span> / <span class="lo">${Math.round(d.tmin)}°</span></div>
+          ${d.pop != null ? `<div class="pop">${d.pop}%</div>` : ''}
+        </div>`;
+      }
+      html += `</div>`;
+    } else {
+      html += `<div class="point-noweek">週間予報なし</div>`;
     }
     html += `</div>`;
   }
