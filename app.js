@@ -131,8 +131,9 @@ async function fetchNewsCategory(cat) {
 }
 
 // 記事本文をオフライン保存用に取得（CORSプロキシ経由 + Readability抽出）
-// codetabsはAccess-Control-Allow-Origin:*を返すのでブラウザから直接叩ける
+// 先頭は自前の東京リージョン関数（Yahoo等の地域ブロックを回避）。失敗時は公開プロキシへ。
 const CORS_PROXIES = [
+  u => `/api/extract?url=${encodeURIComponent(u)}`,
   u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
