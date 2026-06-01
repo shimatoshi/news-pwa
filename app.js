@@ -130,6 +130,87 @@ async function fetchNewsCategory(cat) {
   }));
 }
 
+// 記事本文をオフライン保存用に取得（CORSプロキシ経由 + Readability抽出）
+// codetabsはAccess-Control-Allow-Origin:*を返すのでブラウザから直接叩ける
+const CORS_PROXIES = [
+  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+];
+
+// プロキシのランディングページや地域/ボットブロックページを本文と誤認しないよう弾く
+const BLOCK_MARKERS = [
+  'no longer available in the EEA', 'EEA（European Economic Area', 'をご利用いただけません',
+  'Access Restricted', 'access denied', 'CORSPROXY', 'Enable JavaScript and cookies',
+  'いつもYahoo! JAPANのサービス', 'このサービスは、現在ご利用いただけません',
+  'Just a moment', 'Attention Required', 'Please verify you are a human',
+];
+function isBlockedPage(text, title) {
+  const hay = ((title || '') + ' ' + text.slice(0, 600)).toLowerCase();
+  return BLOCK_MARKERS.some(m => hay.includes(m.toLowerCase()));
+}
+
+async function fetchArticleBody(url) {
+  if (!url || typeof Readability !== 'function') return null;
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const res = await fetch(proxy(url), { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const html = await res.text();
+      if (!html || html.length < 200) continue;
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      // 相対URL解決のため<base>を補う
+      if (!doc.querySelector('base')) {
+        const base = doc.createElement('base');
+        base.href = url;
+        doc.head && doc.head.prepend(base);
+      }
+      const article = new Readability(doc).parse();
+      const text = article && article.textContent ? article.textContent.trim() : '';
+      if (text.length > 200 && !isBlockedPage(text, article.title)) {
+        return {
+          body: text,
+          byline: article.byline || '',
+          siteName: article.siteName || '',
+        };
+      }
+    } catch (e) { /* 次のプロキシへ */ }
+  }
+  return null;
+}
+
+// 全記事の本文をバックグラウンドで取得（同時実行を絞る）
+async function prefetchBodies(items) {
+  const targets = items.filter(it => !it.body && it.link);
+  if (targets.length === 0) return;
+  let done = 0;
+  const total = targets.length;
+  const CONCURRENCY = 3;
+  let idx = 0;
+
+  async function worker() {
+    while (idx < targets.length) {
+      const item = targets[idx++];
+      const art = await fetchArticleBody(item.link).catch(() => null);
+      if (art && art.body) {
+        item.body = art.body;
+        item.byline = art.byline;
+        item.siteName = art.siteName;
+        await dbPut(STORE_NEWS, item).catch(() => {});
+        markSaved(item.id);
+      }
+      done++;
+      showProgress(`記事を保存中... ${done}/${total}`);
+    }
+  }
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  showProgress('');
+}
+
 async function fetchPrefWeather(code, name) {
   const res = await fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`);
   if (!res.ok) return null;
@@ -235,12 +316,22 @@ async function shouldAutoFetch() {
 }
 
 // --- 表示 ---
+const newsById = {};
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function renderNews(newsItems) {
   const panel = document.getElementById('panel-news');
   if (!newsItems || newsItems.length === 0) {
     panel.innerHTML = '<div class="empty">ニュースデータなし</div>';
     return;
   }
+  for (const item of newsItems) newsById[item.id] = item;
+
   const grouped = {};
   newsItems.forEach(item => {
     (grouped[item.category] ||= []).push(item);
@@ -255,20 +346,73 @@ function renderNews(newsItems) {
       </div>`;
     for (const item of items) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-      html += `<div class="news-item">
-          <div class="news-header" onclick="this.parentElement.classList.toggle('open')">
-            <h3>${item.title}</h3>
-            <div class="meta">${date}${item.source ? ' · ' + item.source : ''}</div>
-          </div>
-          <div class="news-body">
-            <p>${item.description || '概要なし'}</p>
-            <a href="${item.link}" target="_blank" rel="noopener" class="read-more">元記事を読む →</a>
+      const saved = item.body ? '<span class="offline-badge" title="オフライン保存済み">📥</span>' : '';
+      html += `<div class="news-item" data-id="${escapeHtml(item.id)}" onclick="openReader(this.dataset.id)">
+          <div class="news-header">
+            <h3>${escapeHtml(item.title)}</h3>
+            <div class="meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${saved}</div>
           </div>
         </div>`;
     }
     html += `</div>`;
   }
   panel.innerHTML = html;
+}
+
+// --- アプリ内リーダー ---
+function bodyToHtml(text) {
+  return text.split(/\n{2,}|\n/).map(p => p.trim()).filter(Boolean)
+    .map(p => `<p>${escapeHtml(p)}</p>`).join('');
+}
+
+async function openReader(id) {
+  const item = newsById[id];
+  if (!item) return;
+  const overlay = document.getElementById('reader');
+  const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+
+  const renderBody = (state) => {
+    let bodyHtml;
+    if (item.body) bodyHtml = bodyToHtml(item.body);
+    else if (state === 'loading') bodyHtml = '<p class="reader-note">本文を取得中…</p>';
+    else if (state === 'offline') bodyHtml = `<p class="reader-note">オフラインのため全文を取得できません。</p><p>${escapeHtml(item.description || '')}</p>`;
+    else bodyHtml = `<p class="reader-note">全文を取得できませんでした。概要を表示します。</p><p>${escapeHtml(item.description || '概要なし')}</p>`;
+    overlay.querySelector('.reader-content').innerHTML = `
+      <h2 class="reader-title">${escapeHtml(item.title)}</h2>
+      <div class="reader-meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${item.siteName ? ' · ' + escapeHtml(item.siteName) : ''}</div>
+      <div class="reader-text">${bodyHtml}</div>
+      <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" class="read-more">元記事を開く →</a>`;
+  };
+
+  overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  renderBody(item.body ? 'cached' : (navigator.onLine ? 'loading' : 'offline'));
+
+  // 未保存かつオンラインなら全文を取りに行く
+  if (!item.body && navigator.onLine) {
+    const art = await fetchArticleBody(item.link);
+    if (art && art.body) {
+      item.body = art.body;
+      item.byline = art.byline;
+      item.siteName = art.siteName;
+      dbPut(STORE_NEWS, item).catch(() => {});
+      markSaved(id);
+    }
+    // オーバーレイがまだ同じ記事を表示中なら更新
+    if (overlay.classList.contains('open')) renderBody(item.body ? 'cached' : 'fail');
+  }
+}
+
+function closeReader() {
+  document.getElementById('reader').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function markSaved(id) {
+  const el = document.querySelector(`.news-item[data-id="${CSS.escape(id)}"] .meta`);
+  if (el && !el.querySelector('.offline-badge')) {
+    el.insertAdjacentHTML('beforeend', '<span class="offline-badge" title="オフライン保存済み">📥</span>');
+  }
 }
 
 function renderHourlyPops(hourlyPops) {
@@ -388,8 +532,8 @@ async function refresh() {
     }
   }).catch(e => console.error('天気取得失敗:', e));
 
+  let allNews = [];
   const newsPromise = (async () => {
-    const allNews = [];
     for (let i = 0; i < NEWS_CATEGORIES.length; i++) {
       const cat = NEWS_CATEGORIES[i];
       try {
@@ -420,6 +564,11 @@ async function refresh() {
   updateStatus();
   btn.classList.remove('loading');
   refreshing = false;
+
+  // 本文をバックグラウンドで取得してオフライン保存（ボタンは先に解放）
+  if (allNews.length > 0 && navigator.onLine) {
+    prefetchBodies(allNews).catch(e => console.warn('本文取得失敗:', e));
+  }
 }
 
 async function loadCached() {

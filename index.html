@@ -126,6 +126,52 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   text-decoration: none;
   padding: 4px 0;
 }
+.offline-badge { margin-left: 6px; font-size: 0.7rem; }
+
+/* アプリ内リーダー */
+.reader {
+  position: fixed;
+  inset: 0;
+  background: #0f0f1a;
+  z-index: 200;
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.reader.open { transform: translateX(0); }
+.reader-bar {
+  position: sticky;
+  top: 0;
+  background: linear-gradient(135deg, #16213e, #1a1a3e);
+  padding: 12px 14px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+.reader-back {
+  background: transparent;
+  border: none;
+  color: #e94560;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.reader-content { padding: 16px 18px 60px; max-width: 720px; margin: 0 auto; }
+.reader-title { font-size: 1.15rem; font-weight: 700; line-height: 1.5; margin-bottom: 8px; }
+.reader-meta { font-size: 0.7rem; color: #777; margin-bottom: 16px; }
+.reader-text p {
+  font-size: 0.95rem;
+  line-height: 1.9;
+  color: #ddd;
+  margin-bottom: 14px;
+}
+.reader-text .reader-note {
+  font-size: 0.78rem;
+  color: #ff9800;
+  background: #1a1a2e;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
 
 /* 天気 - 地方 */
 .weather-area {
@@ -296,6 +342,15 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   </div>
 </div>
 <button class="btn-refresh" id="btn-refresh" title="更新">↻</button>
+
+<div id="reader" class="reader">
+  <div class="reader-bar">
+    <button class="reader-back" onclick="closeReader()">‹ 戻る</button>
+  </div>
+  <div class="reader-content"></div>
+</div>
+
+<script src="readability.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
