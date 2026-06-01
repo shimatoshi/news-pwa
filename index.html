@@ -293,6 +293,22 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .warn-warning { background: #4a2c0a; color: #ffab40; border-color: #ff9100; }
 .warn-advisory { background: #3a3410; color: #ffeb3b; border-color: #ffd600; }
 
+/* 潮汐 */
+.tide-card { margin: 10px 0; padding: 10px; background: #16213e; border-radius: 10px; }
+.tide-head { font-size: 0.82rem; font-weight: 700; color: #4fc3f7; margin-bottom: 8px; }
+.tide-stn { font-size: 0.72rem; color: #9fb8d8; font-weight: 400; margin-left: 4px; }
+.tide-rows { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.tide-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tide-k { font-size: 0.68rem; font-weight: 700; padding: 1px 7px; border-radius: 8px; white-space: nowrap; }
+.tide-k.high { background: #0d3b66; color: #7fb5ff; }
+.tide-k.low { background: #3a2a0d; color: #ffc176; }
+.tide-ev { font-size: 0.74rem; color: #ddd; }
+.tide-ev b { color: #fff; }
+.tide-ev.tide-none { color: #666; }
+.tide-spark { display: flex; align-items: flex-end; gap: 1px; height: 40px; }
+.tide-bar { flex: 1; background: #2e6da4; border-radius: 1px 1px 0 0; min-height: 2px; }
+.tide-bar.now { background: #e94560; }
+
 /* 予報地点ごとの週間予報 */
 .point-week { margin: 10px 0; }
 .point-name {

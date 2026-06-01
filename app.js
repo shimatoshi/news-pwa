@@ -708,6 +708,89 @@ async function reverseGeocode(lat, lon) {
   } catch { return ''; }
 }
 
+// --- 潮汐（気象庁 潮位表） ---
+// 観測点一覧（コード/名前/緯度経度）。同一オリジンの静的JSON、SWでキャッシュ。
+let _tideStations = null;
+async function loadTideStations() {
+  if (_tideStations) return _tideStations;
+  try {
+    const res = await fetch('./tide-stations.json');
+    if (res.ok) { _tideStations = await res.json(); return _tideStations; }
+  } catch (e) { /* オフライン等 */ }
+  return null;
+}
+
+// 現在地から最寄りの潮位観測点（経度は緯度で補正）
+function nearestTideStation(stations, lat, lon) {
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  let best = null;
+  for (const s of stations) {
+    const dLat = s.lat - lat, dLon = (s.lon - lon) * cosLat;
+    const d = dLat * dLat + dLon * dLon;
+    if (!best || d < best.d) best = { s, d };
+  }
+  return best && best.s;
+}
+
+// 気象庁 潮位表テキストの1行（=1日）を解析。固定長フォーマット。
+function parseTideLine(line) {
+  if (!line || line.length < 108) return null;
+  const hourly = [];
+  for (let i = 0; i < 24; i++) hourly.push(parseInt(line.substr(i * 3, 3), 10));
+  const yy = parseInt(line.substr(72, 2), 10), mm = parseInt(line.substr(74, 2), 10), dd = parseInt(line.substr(76, 2), 10);
+  if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null;
+  // 満潮/干潮: 各4回ぶん、time(4)+height(3)。欠損は時刻9999/潮位999。時刻は空白パディング（" 4 8"=04:08）
+  const parseEvents = (start) => {
+    const ev = [];
+    for (let k = 0; k < 4; k++) {
+      const traw = line.substr(start + k * 7, 4), h = parseInt(line.substr(start + k * 7 + 4, 3), 10);
+      if (isNaN(h) || h === 999 || traw === '9999') continue;
+      const t = traw.replace(/ /g, '0');
+      ev.push({ time: `${t.slice(0, 2)}:${t.slice(2, 4)}`, cm: h });
+    }
+    return ev;
+  };
+  return {
+    date: `20${String(yy).padStart(2, '0')}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`,
+    hourly, high: parseEvents(80), low: parseEvents(108),
+  };
+}
+
+// 現在地の潮汐（最寄り観測点の今日＋2日分）を取得
+async function fetchTide(lat, lon) {
+  const stations = await loadTideStations();
+  if (!stations || !stations.length) return null;
+  const st = nearestTideStation(stations, lat, lon);
+  if (!st) return null;
+  const year = new Date().getFullYear();
+  const tideUrl = `https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/${year}/${st.code}.txt`;
+  // data.jma.go.jp はCORS不可なのでプロキシ（先頭=自前の東京関数）経由
+  let txt = '';
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const res = await fetch(proxy(tideUrl));
+      if (!res.ok) continue;
+      const t = await res.text();
+      if (t && t.length > 100 && /^[\s\d-]/.test(t)) { txt = t; break; }
+    } catch (e) { /* 次のプロキシ */ }
+  }
+  if (!txt) return null;
+  const byDate = {};
+  for (const line of txt.split('\n')) {
+    const p = parseTideLine(line);
+    if (p) byDate[p.date] = p;
+  }
+  const days = [];
+  const base = new Date();
+  for (let off = 0; off < 3; off++) {
+    const dt = new Date(base); dt.setDate(base.getDate() + off);
+    const k = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    if (byDate[k]) days.push(byDate[k]);
+  }
+  if (!days.length) return null;
+  return { station: { name: st.name, code: st.code }, days };
+}
+
 async function fetchGeoWeather() {
   const coords = await getPosition();
   const lat = coords.latitude.toFixed(4), lon = coords.longitude.toFixed(4);
@@ -716,7 +799,11 @@ async function fetchGeoWeather() {
     + `&hourly=temperature_2m,precipitation_probability,weather_code`
     + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`
     + `&timezone=Asia%2FTokyo&forecast_days=7`;
-  const [res, name] = await Promise.all([fetch(url), reverseGeocode(lat, lon)]);
+  const [res, name, tide] = await Promise.all([
+    fetch(url),
+    reverseGeocode(lat, lon),
+    fetchTide(parseFloat(lat), parseFloat(lon)).catch(() => null),
+  ]);
   if (!res.ok) throw new Error('open-meteo ' + res.status);
   const d = await res.json();
 
@@ -739,8 +826,36 @@ async function fetchGeoWeather() {
 
   return {
     key: 'geoWeather', name: name || '現在地', lat, lon,
-    current: d.current, hourly, daily, fetchedAt: new Date().toISOString(),
+    current: d.current, hourly, daily, tide, fetchedAt: new Date().toISOString(),
   };
+}
+
+// 潮汐カード（最寄り観測点の今日の満潮/干潮＋24時間の潮位カーブ）
+function renderTide(tide) {
+  if (!tide || !tide.days || !tide.days.length) return '';
+  const today = tide.days[0];
+  const fmt = evs => evs.length
+    ? evs.map(e => `<span class="tide-ev"><b>${e.time}</b> ${e.cm}cm</span>`).join('')
+    : '<span class="tide-ev tide-none">—</span>';
+  // 24時間の潮位スパークライン（現在時刻を強調）
+  const hs = today.hourly;
+  const mn = Math.min(...hs), mx = Math.max(...hs), rng = Math.max(1, mx - mn);
+  const isToday = today.date === new Date().toISOString().slice(0, 10);
+  const nowH = isToday ? new Date().getHours() : -1;
+  let spark = '<div class="tide-spark">';
+  hs.forEach((v, i) => {
+    const ph = Math.round((v - mn) / rng * 100);
+    spark += `<div class="tide-bar${i === nowH ? ' now' : ''}" style="height:${Math.max(ph, 4)}%" title="${i}時 ${v}cm"></div>`;
+  });
+  spark += '</div>';
+  return `<div class="tide-card">
+    <div class="tide-head">🌊 潮汐 <span class="tide-stn">${tide.station.name}</span></div>
+    <div class="tide-rows">
+      <div class="tide-row"><span class="tide-k high">満潮</span>${fmt(today.high)}</div>
+      <div class="tide-row"><span class="tide-k low">干潮</span>${fmt(today.low)}</div>
+    </div>
+    ${spark}
+  </div>`;
 }
 
 function renderGeoWeather(data) {
@@ -806,6 +921,7 @@ function renderGeoWeather(data) {
       </div>
     </div>
     ${hourlyHtml}
+    ${renderTide(data.tide)}
     ${weekHtml}
     <div class="geo-updated">取得 ${updated}</div>
   </div>`;
