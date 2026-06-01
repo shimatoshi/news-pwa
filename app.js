@@ -68,6 +68,19 @@ const WMO_CODES = {
 };
 function wmo(code) { return WMO_CODES[code] || ['不明', '❓']; }
 
+// 気象庁 警報・注意報コード → [名称, レベル]（special=特別警報 / warning=警報 / advisory=注意報）
+const WARNING_CODES = {
+  '32': ['暴風雪特別警報', 'special'], '33': ['大雨特別警報', 'special'], '35': ['暴風特別警報', 'special'],
+  '36': ['大雪特別警報', 'special'], '37': ['波浪特別警報', 'special'], '38': ['高潮特別警報', 'special'],
+  '02': ['暴風雪警報', 'warning'], '03': ['大雨警報', 'warning'], '04': ['洪水警報', 'warning'],
+  '05': ['暴風警報', 'warning'], '06': ['大雪警報', 'warning'], '07': ['波浪警報', 'warning'], '08': ['高潮警報', 'warning'],
+  '10': ['大雨注意報', 'advisory'], '12': ['大雪注意報', 'advisory'], '13': ['風雪注意報', 'advisory'],
+  '14': ['雷注意報', 'advisory'], '15': ['強風注意報', 'advisory'], '16': ['波浪注意報', 'advisory'],
+  '17': ['融雪注意報', 'advisory'], '18': ['洪水注意報', 'advisory'], '19': ['高潮注意報', 'advisory'],
+  '20': ['濃霧注意報', 'advisory'], '21': ['乾燥注意報', 'advisory'], '22': ['なだれ注意報', 'advisory'],
+  '23': ['低温注意報', 'advisory'], '24': ['霜注意報', 'advisory'], '25': ['着氷注意報', 'advisory'], '26': ['着雪注意報', 'advisory'],
+};
+
 const CAT_ICONS = { '総合': '📰', '政治': '🏛️', 'テクノロジー': '💻', '科学': '🔬', '経済': '💹' };
 const DOW = ['日','月','火','水','木','金','土'];
 
@@ -228,7 +241,11 @@ async function prefetchBodies(items) {
 }
 
 async function fetchPrefWeather(code, name) {
-  const res = await fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`);
+  // 天気予報と警報・注意報を並行取得（警報は失敗しても天気は出す）
+  const [res, warn] = await Promise.all([
+    fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`),
+    fetchWarnings(code).catch(() => null),
+  ]);
   if (!res.ok) return null;
   const fc = await res.json();
 
@@ -257,6 +274,7 @@ async function fetchPrefWeather(code, name) {
         code: (a.weatherCodes || [])[i] || '',
       })),
       hourlyPops: popByCode[a.area.code] || [],
+      warnings: (warn && warn.byArea[a.area.code]) || [],  // 区域コードで警報を紐付け
     }));
 
     // 気温（観測点＝予報地点ごと）: temps = [今日最低, 今日最高, 明日最低, 明日最高] 想定
@@ -271,7 +289,35 @@ async function fetchPrefWeather(code, name) {
 
   // 週間予報はJMAだと府県単位で粗く「どの地点か」が曖昧なので、
   // 各予報地点(tempPoints)ごとにOpen-Meteoで取得する（attachPointWeeklyで後付け）
-  return { region: code, name, subAreas, tempPoints, fetchedAt: new Date().toISOString() };
+  return {
+    region: code, name, subAreas, tempPoints,
+    headline: (warn && warn.headline) || '',  // 県全体の見出し文
+    maxLevel: (warn && warn.maxLevel) || '',   // special / warning / advisory / ''
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+// 気象庁の警報・注意報を府県コードで取得 → 区域コードごとの警報配列＋見出し文に整形
+async function fetchWarnings(code) {
+  const res = await fetch(`https://www.jma.go.jp/bosai/warning/data/warning/${code}.json`);
+  if (!res.ok) return null;
+  const w = await res.json();
+  const byArea = {};
+  let maxLevel = '';
+  const rank = { advisory: 1, warning: 2, special: 3 };
+  // areaTypes[0] = 一次細分区域（天気の北西部/南部…と同じコード体系）
+  for (const a of (w.areaTypes?.[0]?.areas || [])) {
+    const list = [];
+    for (const wn of (a.warnings || [])) {
+      if (wn.status === '解除' || wn.status === '発表警報・注意報はなし') continue;
+      const def = WARNING_CODES[wn.code];
+      if (!def) continue;
+      list.push({ name: def[0], level: def[1] });
+      if ((rank[def[1]] || 0) > (rank[maxLevel] || 0)) maxLevel = def[1];
+    }
+    if (list.length) byArea[a.code] = list;
+  }
+  return { byArea, headline: w.headlineText || '', maxLevel };
 }
 
 // アメダス観測所テーブル（コード→緯度経度）。一度取得したらキャッシュ。
@@ -484,11 +530,25 @@ function renderHourlyPops(hourlyPops) {
   return html;
 }
 
+// 警報バッジ（special=赤 / warning=橙 / advisory=黄）
+function renderWarnBadges(warnings) {
+  if (!warnings || !warnings.length) return '';
+  let h = '<div class="warn-badges">';
+  for (const w of warnings) h += `<span class="warn-badge warn-${w.level}">⚠️ ${w.name}</span>`;
+  return h + '</div>';
+}
+
 function renderPrefWeather(item) {
   let html = '';
+  // 県全体の警報見出し（出ているときだけ）
+  if (item.headline) {
+    html += `<div class="warn-headline warn-${item.maxLevel || 'advisory'}">⚠️ ${item.headline}</div>`;
+  }
   // 今日明日の天気：細分区域ごと（柏=北西部 / 房総=南部 を区別）
   for (const sub of (item.subAreas || [])) {
-    html += `<div class="sub-area"><div class="sub-name">${sub.name}</div><div class="today-weather">`;
+    html += `<div class="sub-area"><div class="sub-name">${sub.name}</div>`;
+    html += renderWarnBadges(sub.warnings);
+    html += `<div class="today-weather">`;
     for (const t of sub.todayTomorrow) {
       const date = new Date(t.date);
       const label = `${date.getMonth()+1}/${date.getDate()}(${DOW[date.getDay()]})`;
