@@ -53,6 +53,21 @@ const WEATHER_CODES = {
   '411': ['雪後晴', '🌨️'], '413': ['雪後曇', '🌨️'], '414': ['雪後雨', '🌨️'],
 };
 
+// WMO天気コード（Open-Meteo） → [日本語, 絵文字]
+const WMO_CODES = {
+  0: ['快晴', '☀️'], 1: ['晴れ', '🌤️'], 2: ['薄曇り', '⛅'], 3: ['曇り', '☁️'],
+  45: ['霧', '🌫️'], 48: ['霧氷', '🌫️'],
+  51: ['弱い霧雨', '🌦️'], 53: ['霧雨', '🌦️'], 55: ['強い霧雨', '🌧️'],
+  56: ['着氷性霧雨', '🌧️'], 57: ['着氷性霧雨', '🌧️'],
+  61: ['弱い雨', '🌦️'], 63: ['雨', '🌧️'], 65: ['強い雨', '🌧️'],
+  66: ['着氷性の雨', '🌧️'], 67: ['着氷性の雨', '🌧️'],
+  71: ['弱い雪', '🌨️'], 73: ['雪', '🌨️'], 75: ['強い雪', '❄️'], 77: ['霧雪', '🌨️'],
+  80: ['にわか雨', '🌦️'], 81: ['にわか雨', '🌧️'], 82: ['激しいにわか雨', '⛈️'],
+  85: ['にわか雪', '🌨️'], 86: ['強いにわか雪', '❄️'],
+  95: ['雷雨', '⛈️'], 96: ['雷雨（雹）', '⛈️'], 99: ['激しい雷雨', '⛈️'],
+};
+function wmo(code) { return WMO_CODES[code] || ['不明', '❓']; }
+
 const CAT_ICONS = { '総合': '📰', '政治': '🏛️', 'テクノロジー': '💻', '科学': '🔬', '経済': '💹' };
 const DOW = ['日','月','火','水','木','金','土'];
 
@@ -477,7 +492,7 @@ function renderPrefWeather(item) {
 }
 
 function renderWeather(weatherItems) {
-  const panel = document.getElementById('panel-weather');
+  const panel = document.getElementById('jma-weather');
   if (!weatherItems || weatherItems.length === 0) {
     panel.innerHTML = '<div class="empty">天気データなし</div>';
     return;
@@ -516,6 +531,152 @@ function renderWeather(weatherItems) {
   panel.innerHTML = html;
 }
 
+// --- 現在地ピンポイント天気（Open-Meteo） ---
+function getPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('no geolocation'));
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve(pos.coords),
+      err => reject(err),
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 }
+    );
+  });
+}
+
+async function reverseGeocode(lat, lon) {
+  try {
+    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ja`);
+    if (!res.ok) return '';
+    const d = await res.json();
+    const parts = [d.principalSubdivision, d.city, d.locality].filter(Boolean);
+    return [...new Set(parts)].join(' ');
+  } catch { return ''; }
+}
+
+async function fetchGeoWeather() {
+  const coords = await getPosition();
+  const lat = coords.latitude.toFixed(4), lon = coords.longitude.toFixed(4);
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
+    + `&current=temperature_2m,weather_code,precipitation,relative_humidity_2m,wind_speed_10m,apparent_temperature`
+    + `&hourly=temperature_2m,precipitation_probability,weather_code`
+    + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`
+    + `&timezone=Asia%2FTokyo&forecast_days=7`;
+  const [res, name] = await Promise.all([fetch(url), reverseGeocode(lat, lon)]);
+  if (!res.ok) throw new Error('open-meteo ' + res.status);
+  const d = await res.json();
+
+  // 現在時刻以降の時間別（24時間分）
+  const now = new Date();
+  const h = d.hourly;
+  let startIdx = h.time.findIndex(t => new Date(t) >= now);
+  if (startIdx < 0) startIdx = 0;
+  const hourly = [];
+  for (let i = startIdx; i < Math.min(startIdx + 24, h.time.length); i++) {
+    hourly.push({ time: h.time[i], temp: h.temperature_2m[i], pop: h.precipitation_probability[i], code: h.weather_code[i] });
+  }
+
+  const dl = d.daily;
+  const daily = dl.time.map((t, i) => ({
+    date: t, code: dl.weather_code[i],
+    tmax: dl.temperature_2m_max[i], tmin: dl.temperature_2m_min[i],
+    pop: dl.precipitation_probability_max[i],
+  }));
+
+  return {
+    key: 'geoWeather', name: name || '現在地', lat, lon,
+    current: d.current, hourly, daily, fetchedAt: new Date().toISOString(),
+  };
+}
+
+function renderGeoWeather(data) {
+  const el = document.getElementById('geo-weather');
+  if (!el) return;
+  if (!data || !data.current) {
+    el.innerHTML = `<div class="geo-card geo-empty">
+      <div>📍 現在地の天気</div>
+      <button class="geo-btn" onclick="loadGeoWeather(true)">現在地を表示</button>
+    </div>`;
+    return;
+  }
+  const c = data.current;
+  const [txt, icon] = wmo(c.weather_code);
+  const updated = new Date(data.fetchedAt).toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+
+  // 時間別バー（pop）
+  let hourlyHtml = '';
+  if (data.hourly && data.hourly.length) {
+    hourlyHtml = `<div class="hourly-pops"><div class="hourly-label">時間別 降水確率・気温</div><div class="hourly-bar">`;
+    for (const hh of data.hourly.slice(0, 12)) {
+      const hr = new Date(hh.time).getHours();
+      const val = hh.pop || 0;
+      const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
+      hourlyHtml += `<div class="hourly-cell">
+        <div class="hourly-time">${hr}時</div>
+        <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
+        <div class="hourly-val">${val}%</div>
+        <div class="hourly-temp">${Math.round(hh.temp)}°</div>
+      </div>`;
+    }
+    hourlyHtml += `</div></div>`;
+  }
+
+  // 7日間
+  let weekHtml = `<div class="week-grid">`;
+  for (const d of data.daily) {
+    const date = new Date(d.date);
+    const dow = DOW[date.getDay()];
+    const dayClass = dow === '土' ? 'sat' : dow === '日' ? 'sun' : '';
+    const [, dicon] = wmo(d.code);
+    weekHtml += `<div class="day-card">
+      <div class="day-name ${dayClass}">${date.getMonth()+1}/${date.getDate()}(${dow})</div>
+      <div class="weather-icon">${dicon}</div>
+      <div class="weather-text">${wmo(d.code)[0]}</div>
+      <div class="temp"><span class="hi">${Math.round(d.tmax)}°</span> / <span class="lo">${Math.round(d.tmin)}°</span></div>
+      ${d.pop != null ? `<div class="pop">${d.pop}%</div>` : ''}
+    </div>`;
+  }
+  weekHtml += `</div>`;
+
+  el.innerHTML = `<div class="geo-card">
+    <div class="geo-head">
+      <div class="geo-name">📍 ${data.name}</div>
+      <button class="geo-refresh" onclick="loadGeoWeather(true)" title="現在地を更新">↻</button>
+    </div>
+    <div class="geo-now">
+      <span class="geo-icon">${icon}</span>
+      <span class="geo-temp">${Math.round(c.temperature_2m)}°</span>
+      <div class="geo-detail">
+        <div>${txt}</div>
+        <div>体感${Math.round(c.apparent_temperature)}° · 湿度${c.relative_humidity_2m}% · 風${Math.round(c.wind_speed_10m)}km/h</div>
+      </div>
+    </div>
+    ${hourlyHtml}
+    ${weekHtml}
+    <div class="geo-updated">取得 ${updated}</div>
+  </div>`;
+}
+
+async function loadGeoWeather(force) {
+  // キャッシュ表示
+  const cached = await dbGet(STORE_META, 'geoWeather');
+  if (cached && !force) renderGeoWeather(cached);
+  else if (!cached) renderGeoWeather(null);
+
+  if (!navigator.onLine) return;
+  if (!force && cached) {
+    // キャッシュが新しければ（30分以内）再取得しない
+    if (Date.now() - new Date(cached.fetchedAt).getTime() < 30 * 60 * 1000) return;
+  }
+  try {
+    const data = await fetchGeoWeather();
+    await dbPut(STORE_META, data);
+    renderGeoWeather(data);
+  } catch (e) {
+    console.warn('現在地天気取得失敗:', e);
+    if (!cached) renderGeoWeather(null);
+  }
+}
+
 // --- メイン ---
 let refreshing = false;
 
@@ -526,6 +687,7 @@ async function refresh() {
   btn.classList.add('loading');
 
   // 天気とニュースを並行
+  const geoPromise = loadGeoWeather(true).catch(e => console.warn('現在地天気:', e));
   const weatherPromise = fetchWeather().then(async (items) => {
     if (items.length > 0) {
       await dbPut(STORE_WEATHER, items);
@@ -552,7 +714,7 @@ async function refresh() {
     }
   })();
 
-  await Promise.all([weatherPromise, newsPromise]);
+  await Promise.all([geoPromise, weatherPromise, newsPromise]);
   showProgress('');
 
   await dbPut(STORE_META, {
@@ -573,11 +735,13 @@ async function refresh() {
 }
 
 async function loadCached() {
-  const [newsItems, weatherItems] = await Promise.all([
+  const [newsItems, weatherItems, geo] = await Promise.all([
     dbGetAll(STORE_NEWS),
     dbGetAll(STORE_WEATHER),
+    dbGet(STORE_META, 'geoWeather'),
   ]);
   renderNews(newsItems);
+  renderGeoWeather(geo || null);
   renderWeather(weatherItems);
 }
 
@@ -612,6 +776,12 @@ window.addEventListener('offline', updateStatus);
   }
   await loadCached();
   updateStatus();
+  // 位置情報の許可が既にあれば現在地天気を静かに更新（未許可なら勝手にプロンプトを出さない）
+  if (navigator.onLine && navigator.permissions) {
+    navigator.permissions.query({ name: 'geolocation' })
+      .then(p => { if (p.state === 'granted') loadGeoWeather(false); })
+      .catch(() => {});
+  }
   if (navigator.onLine && await shouldAutoFetch()) {
     refresh();
   }
