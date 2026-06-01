@@ -135,57 +135,70 @@ async function fetchPrefWeather(code, name) {
   if (!res.ok) return null;
   const fc = await res.json();
 
-  // 今日明日の天気テキスト + 6時間毎降水確率 + 気温
-  let todayTomorrow = [], hourlyPops = [], temps = {};
+  // --- 今日明日：細分区域ごと（北西部/南部 等） ---
+  // 天気(timeSeries[0])と降水確率(timeSeries[1])は同じ区域コードを持つのでコードでペアリング
+  let subAreas = [], tempPoints = [];
   if (fc[0]) {
-    const ts0 = fc[0].timeSeries[0];
-    const area0 = ts0.areas[0];
-    todayTomorrow = ts0.timeDefines.map((d, i) => ({
-      date: d, weather: (area0.weathers || [])[i] || '',
-      code: (area0.weatherCodes || [])[i] || '',
-    }));
-    // 6時間毎の降水確率
-    if (fc[0].timeSeries[1]) {
-      const ts1 = fc[0].timeSeries[1];
-      const popArea = ts1.areas[0];
-      hourlyPops = ts1.timeDefines.map((d, i) => ({
-        time: d, pop: (popArea.pops || [])[i] || '',
-      }));
+    const ts0 = fc[0].timeSeries[0];           // 天気
+    const ts1 = fc[0].timeSeries[1];           // 降水確率
+    const ts2 = fc[0].timeSeries[2];           // 気温（観測点）
+
+    // 降水確率を区域コードで引けるように
+    const popByCode = {};
+    if (ts1) {
+      for (const a of ts1.areas) {
+        popByCode[a.area.code] = ts1.timeDefines.map((d, i) => ({
+          time: d, pop: (a.pops || [])[i] || '',
+        }));
+      }
     }
-    // 気温
-    if (fc[0].timeSeries[2]) {
-      const ts2 = fc[0].timeSeries[2];
-      const tempArea = ts2.areas[0];
-      const t = tempArea.temps || [];
-      temps = { min: t[0] || '', max: t[1] || '' };
+
+    subAreas = ts0.areas.map(a => ({
+      name: a.area.name,
+      todayTomorrow: ts0.timeDefines.map((d, i) => ({
+        date: d, weather: (a.weathers || [])[i] || '',
+        code: (a.weatherCodes || [])[i] || '',
+      })),
+      hourlyPops: popByCode[a.area.code] || [],
+    }));
+
+    // 気温（観測点ごと）: temps = [今日最低, 今日最高, 明日最低, 明日最高] 想定
+    if (ts2) {
+      tempPoints = ts2.areas.map(a => {
+        const t = a.temps || [];
+        return { name: a.area.name, min: t[0] || '', max: t[1] || '' };
+      }).filter(p => p.min || p.max);
     }
   }
 
-  // 週間予報
+  // --- 週間予報：予報区ごと（多くは県全体、奄美等で複数） ---
   let weekly = [];
   if (fc[1]) {
     const ts = fc[1].timeSeries[0];
-    const area = ts.areas[0];
-    const codes = area.weatherCodes || [];
-    const pops = area.pops || [];
     const tsTemp = fc[1].timeSeries[1];
-    const tempArea = tsTemp ? tsTemp.areas[0] : {};
-    const maxTemps = tempArea.tempsMax || [];
-    const minTemps = tempArea.tempsMin || [];
+    const tempAreas = tsTemp ? tsTemp.areas : [];
 
-    weekly = ts.timeDefines.map((d, i) => {
-      const date = new Date(d);
-      const dow = DOW[date.getDay()];
-      return {
-        label: `${date.getMonth() + 1}/${date.getDate()}(${dow})`, dow,
-        icon: (WEATHER_CODES[codes[i]] || ['', '❓'])[1],
-        weather: (WEATHER_CODES[codes[i]] || [`天気${codes[i]}`])[0],
-        pop: pops[i] || '', tempMax: maxTemps[i] || '', tempMin: minTemps[i] || '',
-      };
+    weekly = ts.areas.map((area, ai) => {
+      const codes = area.weatherCodes || [];
+      const pops = area.pops || [];
+      const tempArea = tempAreas[ai] || tempAreas[0] || {};
+      const maxTemps = tempArea.tempsMax || [];
+      const minTemps = tempArea.tempsMin || [];
+      const days = ts.timeDefines.map((d, i) => {
+        const date = new Date(d);
+        const dow = DOW[date.getDay()];
+        return {
+          label: `${date.getMonth() + 1}/${date.getDate()}(${dow})`, dow,
+          icon: (WEATHER_CODES[codes[i]] || ['', '❓'])[1],
+          weather: (WEATHER_CODES[codes[i]] || [`天気${codes[i]}`])[0],
+          pop: pops[i] || '', tempMax: maxTemps[i] || '', tempMin: minTemps[i] || '',
+        };
+      });
+      return { areaName: area.area.name, days };
     });
   }
 
-  return { region: code, name, todayTomorrow, hourlyPops, temps, weekly, fetchedAt: new Date().toISOString() };
+  return { region: code, name, subAreas, tempPoints, weekly, fetchedAt: new Date().toISOString() };
 }
 
 async function fetchWeather() {
@@ -258,42 +271,52 @@ function renderNews(newsItems) {
   panel.innerHTML = html;
 }
 
+function renderHourlyPops(hourlyPops) {
+  if (!hourlyPops || hourlyPops.length === 0) return '';
+  let html = `<div class="hourly-pops"><div class="hourly-label">降水確率</div><div class="hourly-bar">`;
+  for (const h of hourlyPops) {
+    const date = new Date(h.time);
+    const hour = `${date.getHours()}時`;
+    const val = parseInt(h.pop) || 0;
+    const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
+    html += `<div class="hourly-cell">
+      <div class="hourly-time">${hour}</div>
+      <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
+      <div class="hourly-val">${h.pop}%</div>
+    </div>`;
+  }
+  html += `</div></div>`;
+  return html;
+}
+
 function renderPrefWeather(item) {
   let html = '';
-  // 今日明日の天気
-  if (item.todayTomorrow.length > 0) {
-    html += `<div class="today-weather">`;
-    for (const t of item.todayTomorrow) {
+  // 今日明日の天気：細分区域ごと（柏=北西部 / 房総=南部 を区別）
+  for (const sub of (item.subAreas || [])) {
+    html += `<div class="sub-area"><div class="sub-name">${sub.name}</div><div class="today-weather">`;
+    for (const t of sub.todayTomorrow) {
       const date = new Date(t.date);
       const label = `${date.getMonth()+1}/${date.getDate()}(${DOW[date.getDay()]})`;
       const icon = (WEATHER_CODES[t.code] || ['','❓'])[1];
       html += `<div class="today-item"><span class="today-label">${label}</span> ${icon} ${t.weather}</div>`;
     }
-    if (item.temps.min || item.temps.max) {
-      html += `<div class="today-temp">気温: <span class="lo">${item.temps.min || '-'}°</span> / <span class="hi">${item.temps.max || '-'}°</span></div>`;
-    }
+    html += `</div>`;
+    html += renderHourlyPops(sub.hourlyPops);
     html += `</div>`;
   }
-  // 6時間毎の降水確率
-  if (item.hourlyPops.length > 0) {
-    html += `<div class="hourly-pops"><div class="hourly-label">降水確率</div><div class="hourly-bar">`;
-    for (const h of item.hourlyPops) {
-      const date = new Date(h.time);
-      const hour = `${date.getHours()}時`;
-      const val = parseInt(h.pop) || 0;
-      const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
-      html += `<div class="hourly-cell">
-        <div class="hourly-time">${hour}</div>
-        <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
-        <div class="hourly-val">${h.pop}%</div>
-      </div>`;
+  // 気温（観測点ごと）
+  if (item.tempPoints && item.tempPoints.length > 0) {
+    html += `<div class="temp-points"><div class="hourly-label">気温（最低/最高）</div><div class="temp-row">`;
+    for (const p of item.tempPoints) {
+      html += `<span class="temp-pt"><span class="pt-name">${p.name}</span> <span class="lo">${p.min || '-'}°</span>/<span class="hi">${p.max || '-'}°</span></span>`;
     }
     html += `</div></div>`;
   }
-  // 週間予報
-  if (item.weekly.length > 0) {
+  // 週間予報（予報区ごと）
+  for (const w of (item.weekly || [])) {
+    if (item.weekly.length > 1) html += `<div class="week-area-name">${w.areaName}</div>`;
     html += `<div class="week-grid">`;
-    for (const d of item.weekly) {
+    for (const d of w.days) {
       const dayClass = d.dow === '土' ? 'sat' : d.dow === '日' ? 'sun' : '';
       html += `<div class="day-card">
         <div class="day-name ${dayClass}">${d.label}</div>
@@ -335,7 +358,10 @@ function renderWeather(weatherItems) {
       html += `<div class="weather-pref">
         <div class="pref-header" onclick="this.parentElement.classList.toggle('open')">
           <span>${name}</span>
-          <span class="pref-summary">${item.todayTomorrow[0] ? (WEATHER_CODES[item.todayTomorrow[0].code]||[''])[1] + ' ' + (WEATHER_CODES[item.todayTomorrow[0].code]||['?'])[0] : ''}</span>
+          <span class="pref-summary">${(() => {
+            const t0 = item.subAreas && item.subAreas[0] && item.subAreas[0].todayTomorrow[0];
+            return t0 ? (WEATHER_CODES[t0.code]||[''])[1] + ' ' + (WEATHER_CODES[t0.code]||['?'])[0] : '';
+          })()}</span>
         </div>
         <div class="pref-body">${renderPrefWeather(item)}</div>
       </div>`;

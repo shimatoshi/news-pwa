@@ -168,11 +168,34 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .pref-body { display: none; padding: 0 10px 10px; }
 .weather-pref.open .pref-body { display: block; }
 
+/* 細分区域（北西部/南部 等） */
+.sub-area {
+  background: #131a2e;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-left: 2px solid #2a3a5a;
+}
+.sub-name {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #7fb5ff;
+  margin-bottom: 4px;
+}
+
 /* 今日明日 */
-.today-weather { margin-bottom: 8px; }
-.today-item { font-size: 0.75rem; padding: 4px 0; color: #ccc; line-height: 1.5; }
+.today-weather { margin-bottom: 6px; }
+.today-item { font-size: 0.75rem; padding: 3px 0; color: #ccc; line-height: 1.5; }
 .today-label { color: #888; margin-right: 4px; }
-.today-temp { font-size: 0.75rem; padding: 2px 0; }
+
+/* 気温（観測点） */
+.temp-points { margin: 8px 0; }
+.temp-row { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.temp-pt { font-size: 0.72rem; color: #ccc; }
+.temp-pt .pt-name { color: #888; margin-right: 2px; }
+.temp-pt .hi { color: #ff8a65; }
+.temp-pt .lo { color: #64b5f6; }
+.week-area-name { font-size: 0.7rem; color: #888; margin: 8px 0 4px; }
 
 /* 6時間毎降水確率 */
 .hourly-pops { margin: 8px 0; }
