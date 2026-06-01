@@ -179,8 +179,62 @@ function isBlockedPage(text, title) {
   return BLOCK_MARKERS.some(m => hay.includes(m.toLowerCase()));
 }
 
-async function fetchArticleBody(url) {
-  if (!url || typeof Readability !== 'function') return null;
+// サイト別の本文セレクタ。Readabilityがサイドバー（アクセスランキング等）を
+// 本文と誤抽出するサイトは、本文要素を直接指定して優先的に使う。
+const SITE_SELECTORS = {
+  'news.yahoo.co.jp': ['div.article_body', '[data-ual-view-type] .article_body', 'article .article_body'],
+  'nippon.com': ['.editArea'],
+};
+// 全文を持たない要約（ティザー）配信ホスト。誤抽出を避けるためReadabilityには
+// フォールバックせず、セレクタが短ければ本文なし扱い（=概要を表示）にする。
+const TEASER_HOSTS = ['nippon.com'];
+
+function hostOf(url) { try { return new URL(url).hostname; } catch { return ''; } }
+
+// サイト別セレクタで本文要素のテキストを取る（最初にヒットしたもの。長さは問わない）
+function selectorText(doc, host) {
+  for (const h in SITE_SELECTORS) {
+    if (!host.includes(h)) continue;
+    for (const sel of SITE_SELECTORS[h]) {
+      const el = doc.querySelector(sel);
+      const t = el && el.textContent ? el.textContent.trim() : '';
+      if (t) return t;
+    }
+  }
+  return '';
+}
+
+// 余分な空白・空行を畳む（ナビ/言語切替由来のスカスカを除去）
+function cleanBody(text) {
+  return text.replace(/[ \t　]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Yahoo の pickup（トピック集約ページ）は本文ではないので、中の実記事URLに解決する
+async function resolveArticleUrl(url) {
+  if (!/news\.yahoo\.co\.jp\/pickup\//.test(url)) return url;
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const res = await fetch(proxy(url));
+      if (!res.ok) continue;
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      for (const a of doc.querySelectorAll('a')) {
+        const href = a.getAttribute('href') || '';
+        const m = href.match(/news\.yahoo\.co\.jp\/articles\/[0-9a-f]{20,}/);
+        if (m && !/\/images\//.test(href)) return 'https://' + m[0];
+      }
+    } catch (e) { /* 次のプロキシへ */ }
+  }
+  return url; // 解決できなければ元のまま
+}
+
+async function fetchArticleBody(rawUrl) {
+  if (!rawUrl || typeof Readability !== 'function') return null;
+  const url = await resolveArticleUrl(rawUrl);
+  const host = hostOf(url);
   for (const proxy of CORS_PROXIES) {
     try {
       const ctrl = new AbortController();
@@ -197,14 +251,19 @@ async function fetchArticleBody(url) {
         base.href = url;
         doc.head && doc.head.prepend(base);
       }
-      const article = new Readability(doc).parse();
-      const text = article && article.textContent ? article.textContent.trim() : '';
-      if (text.length > 200 && !isBlockedPage(text, article.title)) {
-        return {
-          body: text,
-          byline: article.byline || '',
-          siteName: article.siteName || '',
-        };
+      // まずサイト別セレクタ（Yahoo等の誤抽出対策）。ティザー配信ホストは
+      // Readabilityを使わない（ナビ/言語切替を本文と誤認するため）。
+      let text = selectorText(doc, host);
+      let byline = '', siteName = '';
+      if (!text && !TEASER_HOSTS.some(h => host.includes(h))) {
+        const article = new Readability(doc).parse();
+        text = article && article.textContent ? article.textContent.trim() : '';
+        byline = (article && article.byline) || '';
+        siteName = (article && article.siteName) || '';
+      }
+      text = cleanBody(text);
+      if (text.length > 200 && !isBlockedPage(text, '')) {
+        return { body: text, byline, siteName };
       }
     } catch (e) { /* 次のプロキシへ */ }
   }
