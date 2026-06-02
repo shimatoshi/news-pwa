@@ -796,7 +796,7 @@ async function fetchGeoWeather() {
   const lat = coords.latitude.toFixed(4), lon = coords.longitude.toFixed(4);
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
     + `&current=temperature_2m,weather_code,precipitation,relative_humidity_2m,wind_speed_10m,apparent_temperature`
-    + `&hourly=temperature_2m,precipitation_probability,weather_code`
+    + `&hourly=temperature_2m,precipitation_probability,precipitation,weather_code`
     + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`
     + `&timezone=Asia%2FTokyo&forecast_days=7`;
   const [res, name, tide] = await Promise.all([
@@ -814,7 +814,7 @@ async function fetchGeoWeather() {
   if (startIdx < 0) startIdx = 0;
   const hourly = [];
   for (let i = startIdx; i < Math.min(startIdx + 24, h.time.length); i++) {
-    hourly.push({ time: h.time[i], temp: h.temperature_2m[i], pop: h.precipitation_probability[i], code: h.weather_code[i] });
+    hourly.push({ time: h.time[i], temp: h.temperature_2m[i], pop: h.precipitation_probability[i], precip: h.precipitation[i], code: h.weather_code[i] });
   }
 
   const dl = d.daily;
@@ -875,15 +875,18 @@ function renderGeoWeather(data) {
   // 時間別バー（pop）
   let hourlyHtml = '';
   if (data.hourly && data.hourly.length) {
-    hourlyHtml = `<div class="hourly-pops"><div class="hourly-label">時間別 降水確率・気温</div><div class="hourly-bar">`;
+    hourlyHtml = `<div class="hourly-pops"><div class="hourly-label">時間別 降水確率・降水量・気温</div><div class="hourly-bar">`;
     for (const hh of data.hourly.slice(0, 12)) {
       const hr = new Date(hh.time).getHours();
       const val = hh.pop || 0;
       const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
+      const mm = hh.precip || 0;
+      const mmTxt = mm > 0 ? (mm >= 10 ? Math.round(mm) : mm.toFixed(1)) + 'mm' : '';
       hourlyHtml += `<div class="hourly-cell">
         <div class="hourly-time">${hr}時</div>
         <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
         <div class="hourly-val">${val}%</div>
+        <div class="hourly-mm">${mmTxt}</div>
         <div class="hourly-temp">${Math.round(hh.temp)}°</div>
       </div>`;
     }
