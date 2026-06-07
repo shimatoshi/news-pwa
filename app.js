@@ -341,7 +341,7 @@ async function fetchPrefWeather(code, name) {
     if (ts2) {
       tempPoints = ts2.areas.map(a => {
         const t = a.temps || [];
-        return { name: a.area.name, code: a.area.code, min: t[0] || '', max: t[1] || '', weekly: [] };
+        return { name: a.area.name, code: a.area.code, min: t[0] || '', max: t[1] || '', weekly: [], hourly: [] };
       });
     }
   }
@@ -392,8 +392,8 @@ async function getAmedasTable() {
   return _amedasTable;
 }
 
-// 全予報地点の週間予報をOpen-Meteoで取得して tempPoints[].weekly に格納
-async function attachPointWeekly(results) {
+// 全予報地点の週間予報＋時間別予報をOpen-Meteoで取得して tempPoints[].weekly / .hourly に格納
+async function attachPointForecasts(results) {
   let table;
   try { table = await getAmedasTable(); } catch (e) { console.warn('アメダステーブル取得失敗:', e); return; }
 
@@ -415,6 +415,8 @@ async function attachPointWeekly(results) {
     const lons = batch.map(p => p.lon.toFixed(4)).join(',');
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}`
       + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`
+      + `&hourly=temperature_2m,precipitation_probability,precipitation,weather_code`
+      + `&forecast_hours=24`  // 時間別は現在時刻から24時間ぶん
       + `&timezone=Asia%2FTokyo&forecast_days=7`;
     try {
       const res = await fetch(url);
@@ -422,16 +424,25 @@ async function attachPointWeekly(results) {
       let arr = await res.json();
       if (!Array.isArray(arr)) arr = [arr]; // 1地点だとオブジェクトで返る
       arr.forEach((loc, j) => {
+        if (!batch[j]) return;
         const dl = loc.daily;
-        if (!dl || !batch[j]) return;
-        batch[j].tp.weekly = dl.time.map((t, k) => ({
-          date: t, code: dl.weather_code[k],
-          tmax: dl.temperature_2m_max[k], tmin: dl.temperature_2m_min[k],
-          pop: dl.precipitation_probability_max[k],
-        }));
+        if (dl) {
+          batch[j].tp.weekly = dl.time.map((t, k) => ({
+            date: t, code: dl.weather_code[k],
+            tmax: dl.temperature_2m_max[k], tmin: dl.temperature_2m_min[k],
+            pop: dl.precipitation_probability_max[k],
+          }));
+        }
+        const hl = loc.hourly;
+        if (hl) {
+          batch[j].tp.hourly = hl.time.map((t, k) => ({
+            time: t, temp: hl.temperature_2m[k], pop: hl.precipitation_probability[k],
+            precip: hl.precipitation[k], code: hl.weather_code[k],
+          }));
+        }
       });
     } catch (e) { /* このバッチはスキップ */ }
-    showProgress(`週間予報取得中... ${Math.min(i + BATCH, pts.length)}/${pts.length}地点`);
+    showProgress(`地点予報取得中... ${Math.min(i + BATCH, pts.length)}/${pts.length}地点`);
   }
 }
 
@@ -452,8 +463,8 @@ async function fetchWeather() {
     showProgress(`天気取得中... ${done}/${total}`);
   }
 
-  // 各予報地点の週間予報（Open-Meteo）を付与
-  await attachPointWeekly(results);
+  // 各予報地点の週間予報＋時間別予報（Open-Meteo）を付与
+  await attachPointForecasts(results);
   return results;
 }
 
@@ -589,6 +600,27 @@ function renderHourlyPops(hourlyPops) {
   return html;
 }
 
+// 時間別予報バー（降水確率・降水量・気温）。現在地と全国の予報地点で共用。
+function renderHourlyForecast(hourly, hours = 12) {
+  if (!hourly || !hourly.length) return '';
+  let html = `<div class="hourly-pops"><div class="hourly-label">時間別 降水確率・降水量・気温</div><div class="hourly-bar">`;
+  for (const hh of hourly.slice(0, hours)) {
+    const hr = new Date(hh.time).getHours();
+    const val = hh.pop || 0;
+    const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
+    const mm = hh.precip || 0;
+    const mmTxt = mm > 0 ? (mm >= 10 ? Math.round(mm) : mm.toFixed(1)) + 'mm' : '';
+    html += `<div class="hourly-cell">
+      <div class="hourly-time">${hr}時</div>
+      <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
+      <div class="hourly-val">${val}%</div>
+      <div class="hourly-mm">${mmTxt}</div>
+      <div class="hourly-temp">${Math.round(hh.temp)}°</div>
+    </div>`;
+  }
+  return html + `</div></div>`;
+}
+
 // 警報バッジ（special=赤 / warning=橙 / advisory=黄）
 function renderWarnBadges(warnings) {
   if (!warnings || !warnings.length) return '';
@@ -622,6 +654,7 @@ function renderPrefWeather(item) {
   for (const p of (item.tempPoints || [])) {
     const today = (p.min || p.max) ? ` <span class="point-now">今日 ${p.min || '-'}°/${p.max || '-'}°</span>` : '';
     html += `<div class="point-week"><div class="point-name">📍 ${p.name}${today}</div>`;
+    html += renderHourlyForecast(p.hourly);  // 時間別（現在から12時間ぶん表示）
     if (p.weekly && p.weekly.length > 0) {
       html += `<div class="week-grid">`;
       for (const d of p.weekly) {
@@ -872,26 +905,8 @@ function renderGeoWeather(data) {
   const [txt, icon] = wmo(c.weather_code);
   const updated = new Date(data.fetchedAt).toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 
-  // 時間別バー（pop）
-  let hourlyHtml = '';
-  if (data.hourly && data.hourly.length) {
-    hourlyHtml = `<div class="hourly-pops"><div class="hourly-label">時間別 降水確率・降水量・気温</div><div class="hourly-bar">`;
-    for (const hh of data.hourly.slice(0, 12)) {
-      const hr = new Date(hh.time).getHours();
-      const val = hh.pop || 0;
-      const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
-      const mm = hh.precip || 0;
-      const mmTxt = mm > 0 ? (mm >= 10 ? Math.round(mm) : mm.toFixed(1)) + 'mm' : '';
-      hourlyHtml += `<div class="hourly-cell">
-        <div class="hourly-time">${hr}時</div>
-        <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
-        <div class="hourly-val">${val}%</div>
-        <div class="hourly-mm">${mmTxt}</div>
-        <div class="hourly-temp">${Math.round(hh.temp)}°</div>
-      </div>`;
-    }
-    hourlyHtml += `</div></div>`;
-  }
+  // 時間別バー（共通レンダラー）
+  const hourlyHtml = renderHourlyForecast(data.hourly);
 
   // 7日間
   let weekHtml = `<div class="week-grid">`;
