@@ -1,5 +1,5 @@
-const CACHE_NAME = 'news-weather-v7';
-const STATIC_ASSETS = ['./', './index.html', './app.js', './readability.js', './manifest.json', './tide-stations.json'];
+const CACHE_NAME = 'news-weather-v8';
+const STATIC_ASSETS = ['./', './index.html', './app.js', './readability.js', './manifest.json', './tide-stations.json', './debug-note.js'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(STATIC_ASSETS)));
