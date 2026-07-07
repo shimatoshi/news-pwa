@@ -1011,12 +1011,9 @@ function parseTideLine(line) {
   };
 }
 
-// 現在地の潮汐（最寄り観測点の今日＋2日分）を取得
-async function fetchTide(lat, lon) {
-  const stations = await loadTideStations();
-  if (!stations || !stations.length) return null;
-  const st = nearestTideStation(stations, lat, lon);
-  if (!st) return null;
+// 指定観測点の潮汐（今日＋2日分）を取得
+async function fetchTideByStation(st) {
+  if (!st || !st.code) return null;
   const year = new Date().getFullYear();
   const tideUrl = `https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/${year}/${st.code}.txt`;
   // data.jma.go.jp はCORS不可なのでプロキシ（先頭=自前の東京関数）経由
@@ -1044,6 +1041,17 @@ async function fetchTide(lat, lon) {
   }
   if (!days.length) return null;
   return { station: { name: st.name, code: st.code }, days };
+}
+
+// 現在地の潮汐（最寄り観測点の今日＋2日分）を取得
+async function fetchTide(lat, lon) {
+  const stations = await loadTideStations();
+  if (!stations || !stations.length) return null;
+  const st = nearestTideStation(stations, lat, lon);
+  if (!st) return null;
+  const tide = await fetchTideByStation(st);
+  if (tide) tide.nearest = true;
+  return tide;
 }
 
 async function fetchGeoWeather() {
@@ -1187,21 +1195,26 @@ async function loadGeoWeather(force) {
   }
 }
 
-// --- 潮汐タブ（独立ページ） ---
-function renderTidePageMsg(msg) {
-  const el = document.getElementById('tide-page');
+// --- 潮汐タブ（独立ページ：現在地 + 全国の観測点） ---
+const TIDE_REGION_ORDER = ['北海道', '東北', '関東', '北陸', '東海', '近畿', '中国', '四国', '九州', '沖縄'];
+let _tideUserSelected = false;  // ユーザーが観測点を選んだら現在地で上書きしない
+
+function renderTidePageMsg(msg, target) {
+  const el = target || document.getElementById('tide-detail');
   if (el) el.innerHTML = `<div class="tide-empty">${msg}</div>`;
 }
 
-function renderTidePage(tide) {
-  const el = document.getElementById('tide-page');
+// 潮汐カード（観測点1つの今日＋2日分）を target 要素に描画
+function renderTidePage(tide, target) {
+  const el = target || document.getElementById('tide-detail');
   if (!el) return;
   if (!tide || !tide.days || !tide.days.length) {
-    renderTidePageMsg('潮汐データがありません');
+    renderTidePageMsg('潮汐データがありません', el);
     return;
   }
   const todayStr = new Date().toISOString().slice(0, 10);
-  let html = `<div class="tide-page-stn">🌊 最寄りの潮位観測点: <b>${escapeHtml(tide.station.name)}</b></div>`;
+  const caption = tide.nearest ? '📍 現在地の最寄り' : '🌊 潮位観測点';
+  let html = `<div class="tide-page-stn">${caption}: <b>${escapeHtml(tide.station.name)}</b></div>`;
   for (const day of tide.days) {
     const d = new Date(day.date + 'T00:00:00');
     const dow = DOW[d.getDay()];
@@ -1233,30 +1246,80 @@ function renderTidePage(tide) {
   el.innerHTML = html;
 }
 
+// 全国の観測点を地方別アコーディオンで一覧（ネット不要・初回のみ構築）
+async function renderTideBrowser() {
+  const el = document.getElementById('tide-browser');
+  if (!el || el.dataset.built) return;
+  const stations = await loadTideStations();
+  if (!stations || !stations.length) return;
+  const byRegion = {};
+  for (const s of stations) (byRegion[s.region || 'その他'] ||= []).push(s);
+  let html = '<div class="tide-browser-head">全国の観測点から選ぶ</div>';
+  for (const r of TIDE_REGION_ORDER) {
+    const list = byRegion[r];
+    if (!list || !list.length) continue;
+    html += `<div class="weather-area tide-region">
+      <div class="area-header" onclick="this.parentElement.classList.toggle('open')">
+        <span class="area-arrow">▶</span>
+        <h3>${r}</h3>
+        <span class="area-count">${list.length}</span>
+      </div>
+      <div class="area-body"><div class="tide-stn-grid">`;
+    for (const s of list) {
+      html += `<button class="tide-stn-btn" onclick="selectTideStation('${escapeHtml(s.code)}')">${escapeHtml(s.name)}</button>`;
+    }
+    html += `</div></div></div>`;
+  }
+  el.innerHTML = html;
+  el.dataset.built = '1';
+}
+
+// 観測点を選んで潮汐を表示（詳細欄に描画＋先頭へスクロール）
+async function selectTideStation(code) {
+  const stations = await loadTideStations();
+  const st = stations && stations.find(s => s.code === code);
+  if (!st) return;
+  _tideUserSelected = true;
+  const detail = document.getElementById('tide-detail');
+  if (detail) {
+    detail.innerHTML = `<div class="tide-empty">${escapeHtml(st.name)} の潮汐を取得中…</div>`;
+    detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  if (!navigator.onLine) { renderTidePageMsg('オフラインのため取得できません', detail); return; }
+  const tide = await fetchTideByStation(st).catch(() => null);
+  if (tide) renderTidePage(tide, detail);
+  else renderTidePageMsg(`${escapeHtml(st.name)} の潮汐を取得できませんでした`, detail);
+}
+
 async function loadTidePage(force) {
+  renderTideBrowser();  // 全国リスト（初回のみ構築）
+  if (_tideUserSelected && !force) return;  // ユーザーの観測点選択を尊重
+
   // 現在地天気で取得済みの潮汐があれば流用（二重取得を避ける）
   const geo = await dbGet(STORE_META, 'geoWeather').catch(() => null);
   const own = await dbGet(STORE_META, 'tidePage').catch(() => null);
   let tide = null, ts = null;
   if (geo && geo.tide) { tide = geo.tide; ts = geo.fetchedAt; }
   if (own && own.tide && (!ts || new Date(own.fetchedAt) > new Date(ts))) { tide = own.tide; ts = own.fetchedAt; }
-  if (tide && !force) renderTidePage(tide);
+  if (tide) { tide.nearest = true; if (!force) renderTidePage(tide); }
 
-  if (!navigator.onLine) { if (!tide) renderTidePageMsg('オフライン: 潮汐データがありません'); return; }
+  if (!navigator.onLine) { if (!tide) renderTidePageMsg('オフライン: 現在地の潮汐データがありません'); return; }
   if (!force && tide && ts && Date.now() - new Date(ts).getTime() < 60 * 60 * 1000) return;
-  if (!tide) renderTidePageMsg('現在地を取得中…');
+  if (!tide) renderTidePageMsg('現在地を取得中…（または下の一覧から選択）');
 
   try {
     const coords = await getPosition();
     const fresh = await fetchTide(coords.latitude, coords.longitude);
-    if (fresh) {
+    if (fresh && !_tideUserSelected) {
       await dbPut(STORE_META, { key: 'tidePage', tide: fresh, fetchedAt: new Date().toISOString() });
       renderTidePage(fresh);
-    } else if (!tide) {
-      renderTidePageMsg('最寄りの潮位観測点が見つかりませんでした');
+    } else if (!tide && !_tideUserSelected) {
+      renderTidePageMsg('最寄りの観測点が取得できませんでした。下の一覧から選択してください');
     }
   } catch (e) {
-    if (!tide) renderTidePageMsg('位置情報を取得できませんでした<div><button class="geo-btn" onclick="loadTidePage(true)">再試行</button></div>');
+    if (!tide && !_tideUserSelected) {
+      renderTidePageMsg('現在地を取得できませんでした。下の一覧から観測点を選択してください<div><button class="geo-btn" onclick="loadTidePage(true)">現在地を再試行</button></div>');
+    }
   }
 }
 

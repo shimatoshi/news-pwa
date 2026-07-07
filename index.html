@@ -469,6 +469,24 @@ header h1 {
 .tide-day-head .tide-day-dow { color: #8a8272; font-weight: 400; margin-left: 6px; }
 .tide-page-stn { font-size: 0.78rem; color: #cfc7b7; margin-bottom: 12px; }
 .tide-page-stn b { color: #7fb5ff; }
+#tide-detail { margin-bottom: 16px; }
+
+/* 全国の観測点ブラウザ */
+.tide-browser-head {
+  font-size: 0.78rem; font-weight: 700; color: #8a8272;
+  margin: 6px 2px 8px; padding-top: 12px; border-top: 1px solid #2b2723;
+}
+.tide-region { margin-bottom: 8px; }
+.tide-stn-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 6px; padding: 4px 2px;
+}
+.tide-stn-btn {
+  background: #201c15; border: 1px solid #3a342a; color: #d8d0c0;
+  border-radius: 6px; padding: 8px 4px; font-size: 0.74rem; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tide-stn-btn:active { background: #2b2723; border-color: #d99a3f; }
 </style>
 </head>
 <body>
@@ -497,9 +515,12 @@ header h1 {
   </div>
   <div id="panel-tide">
     <div id="tide-page">
-      <div class="tide-empty">位置情報から最寄りの潮位観測点を表示します
-        <div><button class="geo-btn" onclick="loadTidePage(true)">現在地の潮汐を表示</button></div>
+      <div id="tide-detail">
+        <div class="tide-empty">現在地、または下の一覧から観測点を選ぶと潮汐を表示します
+          <div><button class="geo-btn" onclick="loadTidePage(true)">現在地の潮汐を表示</button></div>
+        </div>
       </div>
+      <div id="tide-browser"></div>
     </div>
   </div>
 </div>
