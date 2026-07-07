@@ -154,8 +154,17 @@ async function fetchNewsCategory(cat) {
     description: item.description || '',
     source: item.author || '',
     category: cat.label,
+    image: cleanImageUrl(item.image),
     fetchedAt: new Date().toISOString(),
   }));
+}
+
+// CurrentsやRSSが返す画像URLの正規化（'None'や相対を弾く）
+function cleanImageUrl(u) {
+  if (!u || typeof u !== 'string') return '';
+  u = u.trim();
+  if (!/^https?:\/\//i.test(u) || /^none$/i.test(u)) return '';
+  return u;
 }
 
 // 記事本文をオフライン保存用に取得（CORSプロキシ経由 + Readability抽出）
@@ -263,11 +272,126 @@ async function fetchArticleBody(rawUrl) {
       }
       text = cleanBody(text);
       if (text.length > 200 && !isBlockedPage(text, '')) {
-        return { body: text, byline, siteName };
+        return { body: text, byline, siteName, image: extractImage(doc, url) };
       }
     } catch (e) { /* 次のプロキシへ */ }
   }
   return null;
+}
+
+// 記事ページから代表画像を拾う（og:image → twitter:image → 本文内の最初の画像）
+function extractImage(doc, baseUrl) {
+  const metas = [
+    'meta[property="og:image"]', 'meta[property="og:image:url"]',
+    'meta[name="og:image"]', 'meta[name="twitter:image"]', 'meta[property="twitter:image"]',
+  ];
+  for (const sel of metas) {
+    const m = doc.querySelector(sel);
+    const c = m && (m.getAttribute('content') || m.getAttribute('value'));
+    if (c) { try { return new URL(c, baseUrl).href; } catch (e) { /* 次 */ } }
+  }
+  const img = doc.querySelector('article img[src], .article_body img[src], main img[src], .editArea img[src]');
+  const src = img && img.getAttribute('src');
+  if (src && !/^data:/.test(src)) { try { return new URL(src, baseUrl).href; } catch (e) { /* 無視 */ } }
+  return '';
+}
+
+// --- カスタムフィード（任意サイト追加） ---
+let _customFeeds = null;
+async function getCustomFeeds() {
+  if (_customFeeds) return _customFeeds;
+  const m = await dbGet(STORE_META, 'customFeeds').catch(() => null);
+  _customFeeds = (m && m.feeds) || [];
+  return _customFeeds;
+}
+async function saveCustomFeeds(feeds) {
+  _customFeeds = feeds;
+  await dbPut(STORE_META, { key: 'customFeeds', feeds }).catch(() => {});
+}
+
+function stripTags(s) { return String(s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
+
+// CORSプロキシ経由でテキスト取得（RSS/HTML共用）
+async function fetchViaProxy(url) {
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const res = await fetch(proxy(url), { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const t = await res.text();
+      if (t && t.length > 50) return t;
+    } catch (e) { /* 次のプロキシ */ }
+  }
+  return '';
+}
+
+// HTMLページから<link rel=alternate>のRSS/AtomフィードURLを自動発見
+function discoverFeedUrl(html, baseUrl) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const link = doc.querySelector('link[type="application/rss+xml"], link[type="application/atom+xml"], link[type="application/feed+json"]');
+    const href = link && link.getAttribute('href');
+    if (href) return new URL(href, baseUrl).href;
+  } catch (e) { /* 無視 */ }
+  return '';
+}
+
+// RSS/Atom XMLを記事配列に変換
+function parseFeed(xmlText, feedName) {
+  let doc;
+  try { doc = new DOMParser().parseFromString(xmlText, 'text/xml'); } catch (e) { return []; }
+  if (doc.querySelector('parsererror')) {
+    doc = new DOMParser().parseFromString(xmlText, 'text/html');
+  }
+  const nodes = [...doc.querySelectorAll('item, entry')];
+  const out = [];
+  nodes.forEach((el, i) => {
+    const q = sel => { const n = el.querySelector(sel); return n ? n.textContent.trim() : ''; };
+    const title = q('title');
+    let link = q('link');
+    if (!link) { const la = el.querySelector('link[href]'); link = la ? la.getAttribute('href') : ''; }
+    if (!link) link = q('guid');
+    if (!title || !link) return;
+    const desc = q('description') || q('summary') || q('content') || q('encoded');
+    const dateRaw = q('pubDate') || q('published') || q('updated') || q('date');
+    let pub = '';
+    if (dateRaw) { const dd = new Date(dateRaw); if (!isNaN(dd.getTime())) pub = dd.toISOString(); }
+    // 画像: enclosure → media:content/thumbnail → 本文HTML内<img>
+    let image = '';
+    const enc = el.querySelector('enclosure[url]');
+    if (enc && /image|^$/i.test(enc.getAttribute('type') || '')) image = enc.getAttribute('url');
+    if (!image) {
+      const mc = el.getElementsByTagName('media:content')[0] || el.getElementsByTagName('media:thumbnail')[0];
+      if (mc && mc.getAttribute('url')) image = mc.getAttribute('url');
+    }
+    if (!image) { const mm = (desc || '').match(/<img[^>]+src=["']([^"']+)["']/i); if (mm) image = mm[1]; }
+    out.push({
+      id: `${feedName}-${i}`,
+      title: title.replace(/\s+/g, ' '),
+      link: link.trim(), pubDate: pub,
+      description: stripTags(desc).slice(0, 400),
+      source: feedName, category: feedName,
+      image: cleanImageUrl(image), custom: true,
+      fetchedAt: new Date().toISOString(),
+    });
+  });
+  return out;
+}
+
+// カスタムフィードを取得（RSSでなければHTMLから自動発見して再取得）
+async function fetchCustomFeed(feed) {
+  let xml = await fetchViaProxy(feed.url);
+  if (!xml) return [];
+  const head = xml.slice(0, 1200).toLowerCase();
+  if (!head.includes('<rss') && !head.includes('<feed') && !head.includes('<rdf')) {
+    const rssUrl = discoverFeedUrl(xml, feed.url);
+    if (!rssUrl) return [];
+    xml = await fetchViaProxy(rssUrl);
+    if (!xml) return [];
+  }
+  return parseFeed(xml, feed.name);
 }
 
 // 全記事の本文をバックグラウンドで取得（同時実行を絞る）
@@ -287,6 +411,7 @@ async function prefetchBodies(items) {
         item.body = art.body;
         item.byline = art.byline;
         item.siteName = art.siteName;
+        if (!item.image && art.image) { item.image = art.image; markImage(item.id, art.image); }
         await dbPut(STORE_NEWS, item).catch(() => {});
         markSaved(item.id);
       }
@@ -492,7 +617,8 @@ function escapeHtml(s) {
 }
 
 function renderNews(newsItems) {
-  const panel = document.getElementById('panel-news');
+  const panel = document.getElementById('news-list');
+  if (!panel) return;
   if (!newsItems || newsItems.length === 0) {
     panel.innerHTML = '<div class="empty">ニュースデータなし</div>';
     return;
@@ -506,18 +632,23 @@ function renderNews(newsItems) {
 
   let html = '';
   for (const [cat, items] of Object.entries(grouped)) {
+    const isCustom = items[0] && items[0].custom;
     html += `<div class="news-category">
-      <div class="cat-header">
-        <h2>${CAT_ICONS[cat] || '📄'} ${cat}</h2>
+      <div class="cat-header${isCustom ? ' custom' : ''}">
+        <h2>${isCustom ? '🔗' : (CAT_ICONS[cat] || '📄')} ${escapeHtml(cat)}</h2>
         <span class="count">${items.length}件</span>
       </div>`;
     for (const item of items) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
       const saved = item.body ? '<span class="offline-badge" title="オフライン保存済み">📥</span>' : '';
+      const thumb = item.image ? `<img class="news-thumb" data-id="${escapeHtml(item.id)}" src="${escapeHtml(item.image)}" loading="lazy" alt="" onerror="this.remove()">` : '';
       html += `<div class="news-item" data-id="${escapeHtml(item.id)}" onclick="openReader(this.dataset.id)">
           <div class="news-header">
-            <h3>${escapeHtml(item.title)}</h3>
-            <div class="meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${saved}</div>
+            <div class="news-main">
+              <h3>${escapeHtml(item.title)}</h3>
+              <div class="meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${saved}</div>
+            </div>
+            ${thumb}
           </div>
         </div>`;
     }
@@ -544,7 +675,9 @@ async function openReader(id) {
     else if (state === 'loading') bodyHtml = '<p class="reader-note">本文を取得中…</p>';
     else if (state === 'offline') bodyHtml = `<p class="reader-note">オフラインのため全文を取得できません。</p><p>${escapeHtml(item.description || '')}</p>`;
     else bodyHtml = `<p class="reader-note">全文を取得できませんでした。概要を表示します。</p><p>${escapeHtml(item.description || '概要なし')}</p>`;
+    const hero = item.image ? `<img class="reader-hero" src="${escapeHtml(item.image)}" alt="" onerror="this.remove()">` : '';
     overlay.querySelector('.reader-content').innerHTML = `
+      ${hero}
       <h2 class="reader-title">${escapeHtml(item.title)}</h2>
       <div class="reader-meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${item.siteName ? ' · ' + escapeHtml(item.siteName) : ''}</div>
       <div class="reader-text">${bodyHtml}</div>
@@ -562,6 +695,7 @@ async function openReader(id) {
       item.body = art.body;
       item.byline = art.byline;
       item.siteName = art.siteName;
+      if (!item.image && art.image) item.image = art.image;
       dbPut(STORE_NEWS, item).catch(() => {});
       markSaved(id);
     }
@@ -580,6 +714,94 @@ function markSaved(id) {
   if (el && !el.querySelector('.offline-badge')) {
     el.insertAdjacentHTML('beforeend', '<span class="offline-badge" title="オフライン保存済み">📥</span>');
   }
+}
+
+// 後追いで取れた画像を一覧のカードに差し込む
+function markImage(id, src) {
+  const header = document.querySelector(`.news-item[data-id="${CSS.escape(id)}"] .news-header`);
+  if (header && !header.querySelector('.news-thumb')) {
+    const img = document.createElement('img');
+    img.className = 'news-thumb'; img.src = src; img.loading = 'lazy'; img.alt = '';
+    img.onerror = () => img.remove();
+    header.appendChild(img);
+  }
+}
+
+// --- カスタムフィードのUI ---
+function renderNewsTools() {
+  const el = document.getElementById('news-tools');
+  if (!el) return;
+  const feeds = _customFeeds || [];
+  const chips = feeds.map((f, i) =>
+    `<span class="feed-chip custom-cat">${escapeHtml(f.name)}<span class="feed-del" title="削除" onclick="removeCustomFeed(${i})">✕</span></span>`
+  ).join('');
+  el.innerHTML =
+    `<div class="news-tools-row">
+      <button class="add-site-btn" onclick="toggleSiteForm()">＋ サイトを追加</button>
+    </div>
+    <div class="site-form" id="site-form">
+      <div class="sf-hint">ニュースサイト/ブログのURLを入力（RSS・Atomフィード、またはトップページ）。トップページの場合はフィードを自動検出します。</div>
+      <input id="sf-url" type="url" inputmode="url" placeholder="https://example.com/feed  など">
+      <input id="sf-name" type="text" placeholder="表示名（任意）">
+      <div class="site-form-row">
+        <button class="sf-add" onclick="submitCustomFeed()">追加</button>
+        <button class="sf-cancel" onclick="toggleSiteForm()">キャンセル</button>
+      </div>
+    </div>` +
+    (feeds.length ? `<div class="feed-chips">${chips}</div>` : '');
+}
+
+function toggleSiteForm() {
+  const f = document.getElementById('site-form');
+  if (f) f.classList.toggle('open');
+}
+
+async function submitCustomFeed() {
+  const urlEl = document.getElementById('sf-url');
+  const nameEl = document.getElementById('sf-name');
+  if (!urlEl) return;
+  let url = (urlEl.value || '').trim();
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  let name = (nameEl.value || '').trim();
+  const feeds = await getCustomFeeds();
+  if (feeds.some(f => f.url === url)) { toggleSiteForm(); return; }
+  if (!name) name = hostOf(url).replace(/^www\./, '') || 'カスタム';
+
+  showProgress(`${name} を取得中...`);
+  let items = [];
+  try {
+    items = await fetchCustomFeed({ name, url });
+  } catch (e) { console.warn('カスタムフィード取得失敗:', e); }
+  showProgress('');
+
+  if (!items.length) {
+    alert('記事を取得できませんでした。\nRSS/AtomフィードのURLを直接指定すると確実です。');
+    return;
+  }
+  feeds.push({ name, url });
+  await saveCustomFeeds(feeds);
+  renderNewsTools();
+  urlEl.value = ''; nameEl.value = '';
+
+  await dbPut(STORE_NEWS, items).catch(() => {});
+  const all = await dbGetAll(STORE_NEWS);
+  renderNews(all);
+  if (navigator.onLine) prefetchBodies(items).catch(() => {});
+}
+
+async function removeCustomFeed(idx) {
+  const feeds = await getCustomFeeds();
+  const removed = feeds[idx];
+  if (!removed) return;
+  feeds.splice(idx, 1);
+  await saveCustomFeeds(feeds);
+  renderNewsTools();
+  // そのフィードの記事をDB・表示から除去
+  const remaining = (await dbGetAll(STORE_NEWS)).filter(n => n.category !== removed.name);
+  await dbClear(STORE_NEWS);
+  if (remaining.length) await dbPut(STORE_NEWS, remaining);
+  renderNews(remaining);
 }
 
 function renderHourlyPops(hourlyPops) {
@@ -939,7 +1161,6 @@ function renderGeoWeather(data) {
       </div>
     </div>
     ${hourlyHtml}
-    ${renderTide(data.tide)}
     ${weekHtml}
     <div class="geo-updated">取得 ${updated}</div>
   </div>`;
@@ -963,6 +1184,79 @@ async function loadGeoWeather(force) {
   } catch (e) {
     console.warn('現在地天気取得失敗:', e);
     if (!cached) renderGeoWeather(null);
+  }
+}
+
+// --- 潮汐タブ（独立ページ） ---
+function renderTidePageMsg(msg) {
+  const el = document.getElementById('tide-page');
+  if (el) el.innerHTML = `<div class="tide-empty">${msg}</div>`;
+}
+
+function renderTidePage(tide) {
+  const el = document.getElementById('tide-page');
+  if (!el) return;
+  if (!tide || !tide.days || !tide.days.length) {
+    renderTidePageMsg('潮汐データがありません');
+    return;
+  }
+  const todayStr = new Date().toISOString().slice(0, 10);
+  let html = `<div class="tide-page-stn">🌊 最寄りの潮位観測点: <b>${escapeHtml(tide.station.name)}</b></div>`;
+  for (const day of tide.days) {
+    const d = new Date(day.date + 'T00:00:00');
+    const dow = DOW[d.getDay()];
+    const isToday = day.date === todayStr;
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    const fmt = evs => evs.length
+      ? evs.map(e => `<span class="tide-ev"><b>${e.time}</b> ${e.cm}cm</span>`).join('')
+      : '<span class="tide-ev tide-none">—</span>';
+    const hs = day.hourly;
+    const mn = Math.min(...hs), mx = Math.max(...hs), rng = Math.max(1, mx - mn);
+    const nowH = isToday ? new Date().getHours() : -1;
+    let spark = '<div class="tide-spark">';
+    hs.forEach((v, i) => {
+      const ph = Math.round((v - mn) / rng * 100);
+      spark += `<div class="tide-bar${i === nowH ? ' now' : ''}" style="height:${Math.max(ph, 4)}%" title="${i}時 ${v}cm"></div>`;
+    });
+    spark += '</div>';
+    html += `<div class="tide-day">
+      <div class="tide-day-head">${label}${isToday ? ' <span class="tide-day-dow">今日</span>' : ` <span class="tide-day-dow">(${dow})</span>`}</div>
+      <div class="tide-card">
+        <div class="tide-rows">
+          <div class="tide-row"><span class="tide-k high">満潮</span>${fmt(day.high)}</div>
+          <div class="tide-row"><span class="tide-k low">干潮</span>${fmt(day.low)}</div>
+        </div>
+        ${spark}
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function loadTidePage(force) {
+  // 現在地天気で取得済みの潮汐があれば流用（二重取得を避ける）
+  const geo = await dbGet(STORE_META, 'geoWeather').catch(() => null);
+  const own = await dbGet(STORE_META, 'tidePage').catch(() => null);
+  let tide = null, ts = null;
+  if (geo && geo.tide) { tide = geo.tide; ts = geo.fetchedAt; }
+  if (own && own.tide && (!ts || new Date(own.fetchedAt) > new Date(ts))) { tide = own.tide; ts = own.fetchedAt; }
+  if (tide && !force) renderTidePage(tide);
+
+  if (!navigator.onLine) { if (!tide) renderTidePageMsg('オフライン: 潮汐データがありません'); return; }
+  if (!force && tide && ts && Date.now() - new Date(ts).getTime() < 60 * 60 * 1000) return;
+  if (!tide) renderTidePageMsg('現在地を取得中…');
+
+  try {
+    const coords = await getPosition();
+    const fresh = await fetchTide(coords.latitude, coords.longitude);
+    if (fresh) {
+      await dbPut(STORE_META, { key: 'tidePage', tide: fresh, fetchedAt: new Date().toISOString() });
+      renderTidePage(fresh);
+    } else if (!tide) {
+      renderTidePageMsg('最寄りの潮位観測点が見つかりませんでした');
+    }
+  } catch (e) {
+    if (!tide) renderTidePageMsg('位置情報を取得できませんでした<div><button class="geo-btn" onclick="loadTidePage(true)">再試行</button></div>');
   }
 }
 
@@ -995,6 +1289,18 @@ async function refresh() {
         renderNews(allNews);
       } catch (e) {
         console.warn(`ニュース取得失敗: ${cat.label}`, e);
+      }
+    }
+    // ユーザーが追加した任意サイト（RSS/Atom）
+    const feeds = await getCustomFeeds();
+    for (const feed of feeds) {
+      try {
+        showProgress(`サイト取得中... ${feed.name}`);
+        const items = await fetchCustomFeed(feed);
+        allNews.push(...items);
+        renderNews(allNews);
+      } catch (e) {
+        console.warn(`カスタムフィード取得失敗: ${feed.name}`, e);
       }
     }
     if (allNews.length > 0) {
@@ -1044,13 +1350,17 @@ async function updateStatus() {
 }
 
 // --- タブ切替 ---
+const PANELS = ['news', 'weather', 'tide'];
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     const panel = tab.dataset.panel;
-    document.getElementById('panel-news').classList.toggle('active', panel === 'news');
-    document.getElementById('panel-weather').classList.toggle('active', panel === 'weather');
+    PANELS.forEach(p => {
+      const el = document.getElementById('panel-' + p);
+      if (el) el.classList.toggle('active', panel === p);
+    });
+    if (panel === 'tide') loadTidePage(false);
   });
 });
 
@@ -1063,6 +1373,8 @@ window.addEventListener('offline', updateStatus);
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(e => console.warn('SW登録失敗:', e));
   }
+  await getCustomFeeds();
+  renderNewsTools();
   await loadCached();
   updateStatus();
   // 位置情報の許可が既にあれば現在地天気を静かに更新（未許可なら勝手にプロンプトを出さない）

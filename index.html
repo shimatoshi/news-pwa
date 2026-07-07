@@ -5,25 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ニュース & 天気</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#16213e">
+<meta name="theme-color" content="#2a2620">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
-  background: #0f0f1a;
-  color: #e0e0e0;
+  background: #14120d;
+  color: #e6e0d4;
   min-height: 100vh;
   padding-bottom: 80px;
 }
 header {
-  background: linear-gradient(135deg, #16213e, #1a1a3e);
+  background: linear-gradient(135deg, #2a2620, #211d17);
   padding: 14px 16px;
   position: sticky;
   top: 0;
   z-index: 100;
   box-shadow: 0 2px 12px rgba(0,0,0,0.5);
 }
-header h1 { font-size: 1.1rem; font-weight: 700; }
+header h1 {
+  font-size: 1.15rem; font-weight: 700; letter-spacing: 0.04em;
+  font-family: Georgia, 'Hiragino Mincho ProN', 'Yu Mincho', 'Noto Serif JP', serif;
+}
 .status {
   font-size: 0.7rem;
   margin-top: 3px;
@@ -35,7 +38,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 /* タブ */
 .tabs {
   display: flex;
-  background: #12122a;
+  background: #1d1a14;
   position: sticky;
   top: 53px;
   z-index: 99;
@@ -53,7 +56,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   transition: all 0.2s;
   border-bottom: 3px solid transparent;
 }
-.tab.active { color: #fff; border-bottom-color: #e94560; }
+.tab.active { color: #fff; border-bottom-color: #d99a3f; }
 
 /* コンテンツ */
 .content { padding: 12px; }
@@ -70,30 +73,30 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   gap: 8px;
   margin-bottom: 10px;
   padding: 6px 10px;
-  background: linear-gradient(90deg, #1e2a4a, transparent);
-  border-left: 3px solid #e94560;
+  background: linear-gradient(90deg, #2a251d, transparent);
+  border-left: 3px solid #d99a3f;
   border-radius: 0 6px 6px 0;
 }
 .cat-header h2 {
   font-size: 0.85rem;
   font-weight: 700;
-  color: #e94560;
+  color: #d99a3f;
 }
 .cat-header .count {
   font-size: 0.65rem;
   color: #666;
-  background: #0f0f1a;
+  background: #14120d;
   padding: 2px 6px;
   border-radius: 8px;
 }
 .news-item {
   margin-bottom: 6px;
-  background: #16182a;
+  background: #221f18;
   border-radius: 8px;
   border-left: 2px solid transparent;
   transition: border-color 0.2s;
 }
-.news-item.open { border-left-color: #e94560; }
+.news-item.open { border-left-color: #d99a3f; }
 .news-header {
   padding: 10px 12px;
   cursor: pointer;
@@ -122,7 +125,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .read-more {
   display: inline-block;
   font-size: 0.75rem;
-  color: #e94560;
+  color: #d99a3f;
   text-decoration: none;
   padding: 4px 0;
 }
@@ -132,7 +135,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .reader {
   position: fixed;
   inset: 0;
-  background: #0f0f1a;
+  background: #14120d;
   z-index: 200;
   transform: translateX(100%);
   transition: transform 0.25s ease;
@@ -143,21 +146,24 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .reader-bar {
   position: sticky;
   top: 0;
-  background: linear-gradient(135deg, #16213e, #1a1a3e);
+  background: linear-gradient(135deg, #2a2620, #211d17);
   padding: 12px 14px;
   box-shadow: 0 2px 12px rgba(0,0,0,0.5);
 }
 .reader-back {
   background: transparent;
   border: none;
-  color: #e94560;
+  color: #d99a3f;
   font-size: 0.95rem;
   font-weight: 600;
   cursor: pointer;
   padding: 4px 0;
 }
 .reader-content { padding: 16px 18px 60px; max-width: 720px; margin: 0 auto; }
-.reader-title { font-size: 1.15rem; font-weight: 700; line-height: 1.5; margin-bottom: 8px; }
+.reader-title {
+  font-size: 1.2rem; font-weight: 700; line-height: 1.55; margin-bottom: 8px;
+  font-family: Georgia, 'Hiragino Mincho ProN', 'Yu Mincho', 'Noto Serif JP', serif;
+}
 .reader-meta { font-size: 0.7rem; color: #777; margin-bottom: 16px; }
 .reader-text p {
   font-size: 0.95rem;
@@ -168,18 +174,18 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .reader-text .reader-note {
   font-size: 0.78rem;
   color: #ff9800;
-  background: #1a1a2e;
+  background: #211d17;
   padding: 8px 10px;
   border-radius: 6px;
 }
 
 /* 現在地ピンポイント天気 */
 .geo-card {
-  background: linear-gradient(135deg, #1a2540, #16213e);
+  background: linear-gradient(135deg, #242019, #2a2620);
   border-radius: 12px;
   padding: 14px;
   margin-bottom: 14px;
-  border: 1px solid #2a3a5a;
+  border: 1px solid #3a342a;
 }
 .geo-empty {
   display: flex;
@@ -191,9 +197,9 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .geo-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .geo-name { font-size: 0.9rem; font-weight: 700; color: #7fb5ff; }
 .geo-refresh, .geo-btn {
-  background: rgba(233,69,96,0.15);
-  border: 1px solid #e94560;
-  color: #e94560;
+  background: rgba(217,154,63,0.15);
+  border: 1px solid #d99a3f;
+  color: #d99a3f;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.8rem;
@@ -212,7 +218,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 /* 天気 - 地方 */
 .weather-area {
   margin-bottom: 8px;
-  background: #16182a;
+  background: #221f18;
   border-radius: 10px;
   overflow: hidden;
 }
@@ -221,20 +227,20 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   align-items: center;
   gap: 8px;
   padding: 12px 14px;
-  background: linear-gradient(135deg, #1a2540, #1e2a4a);
+  background: linear-gradient(135deg, #242019, #2a251d);
   cursor: pointer;
 }
 .area-header h3 { font-size: 0.9rem; font-weight: 700; flex: 1; }
 .area-arrow { font-size: 0.6rem; color: #666; transition: transform 0.2s; }
 .weather-area.open .area-arrow { transform: rotate(90deg); }
-.area-count { font-size: 0.65rem; color: #666; background: #0f0f1a; padding: 2px 6px; border-radius: 8px; }
+.area-count { font-size: 0.65rem; color: #666; background: #14120d; padding: 2px 6px; border-radius: 8px; }
 .area-body { display: none; padding: 4px 8px 8px; }
 .weather-area.open .area-body { display: block; }
 
 /* 天気 - 都道府県 */
 .weather-pref {
   margin-bottom: 4px;
-  background: #0f1525;
+  background: #1b1812;
   border-radius: 8px;
   overflow: hidden;
 }
@@ -252,11 +258,11 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 
 /* 細分区域（北西部/南部 等） */
 .sub-area {
-  background: #131a2e;
+  background: #201c15;
   border-radius: 6px;
   padding: 8px 10px;
   margin-bottom: 6px;
-  border-left: 2px solid #2a3a5a;
+  border-left: 2px solid #3a342a;
 }
 .sub-name {
   font-size: 0.78rem;
@@ -295,7 +301,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .warn-advisory { background: #3a3410; color: #ffeb3b; border-color: #ffd600; }
 
 /* 潮汐 */
-.tide-card { margin: 10px 0; padding: 10px; background: #16213e; border-radius: 10px; }
+.tide-card { margin: 10px 0; padding: 10px; background: #2a2620; border-radius: 10px; }
 .tide-head { font-size: 0.82rem; font-weight: 700; color: #4fc3f7; margin-bottom: 8px; }
 .tide-stn { font-size: 0.72rem; color: #9fb8d8; font-weight: 400; margin-left: 4px; }
 .tide-rows { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
@@ -308,7 +314,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .tide-ev.tide-none { color: #666; }
 .tide-spark { display: flex; align-items: flex-end; gap: 1px; height: 40px; }
 .tide-bar { flex: 1; background: #2e6da4; border-radius: 1px 1px 0 0; min-height: 2px; }
-.tide-bar.now { background: #e94560; }
+.tide-bar.now { background: #d99a3f; }
 
 /* 予報地点ごとの週間予報 */
 .point-week { margin: 10px 0; }
@@ -335,7 +341,7 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   gap: 6px;
 }
 .day-card {
-  background: #0f1525;
+  background: #1b1812;
   border-radius: 8px;
   padding: 8px 6px;
   text-align: center;
@@ -375,19 +381,19 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #e94560, #c62a45);
+  background: linear-gradient(135deg, #d99a3f, #b9832f);
   color: white;
   border: none;
   font-size: 1.3rem;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(233,69,96,0.4);
+  box-shadow: 0 4px 16px rgba(217,154,63,0.4);
   z-index: 100;
 }
 .btn-refresh:active { transform: scale(0.9); }
 .btn-refresh.loading { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 #progress {
-  background: #1a1a3e;
+  background: #211d17;
   color: #4fc3f7;
   font-size: 0.75rem;
   padding: 8px 16px;
@@ -396,9 +402,73 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 .empty {
   text-align: center;
   padding: 40px 20px;
-  color: #444;
+  color: #6b6355;
   font-size: 0.85rem;
 }
+
+/* ニュースのサムネイル画像 */
+.news-header { display: flex; gap: 10px; align-items: flex-start; }
+.news-header .news-main { flex: 1; min-width: 0; }
+.news-thumb {
+  width: 74px; height: 74px; object-fit: cover; border-radius: 6px;
+  flex-shrink: 0; background: #201c15;
+}
+.reader-hero {
+  width: 100%; max-height: 230px; object-fit: cover;
+  border-radius: 8px; margin-bottom: 14px; background: #201c15;
+}
+
+/* カスタムフィード（任意サイト）ツールバー */
+.news-tools { margin-bottom: 14px; }
+.news-tools-row { display: flex; gap: 8px; align-items: center; }
+.add-site-btn {
+  background: rgba(217,154,63,0.15); border: 1px solid #d99a3f; color: #d99a3f;
+  border-radius: 8px; padding: 7px 12px; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+}
+.feed-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.feed-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #221f18; border: 1px solid #3a342a; border-radius: 14px;
+  padding: 4px 6px 4px 11px; font-size: 0.72rem; color: #cfc7b7;
+}
+.feed-chip .feed-del {
+  cursor: pointer; color: #a89f8c; background: #2b2723; border-radius: 50%;
+  width: 18px; height: 18px; line-height: 18px; text-align: center; font-size: 0.7rem;
+}
+.feed-chip.custom-cat .feed-del:hover { color: #e8724c; }
+.site-form {
+  margin-top: 8px; background: #201c15; border: 1px solid #3a342a;
+  border-radius: 8px; padding: 10px; display: none;
+}
+.site-form.open { display: block; }
+.site-form input {
+  width: 100%; box-sizing: border-box; background: #14120d; color: #e6e0d4;
+  border: 1px solid #3a342a; border-radius: 6px; padding: 8px 10px; font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+.site-form .site-form-row { display: flex; gap: 8px; }
+.site-form button {
+  border: none; border-radius: 6px; padding: 8px 14px; font-size: 0.8rem;
+  font-weight: 600; cursor: pointer;
+}
+.site-form .sf-add { background: #d99a3f; color: #1b1812; }
+.site-form .sf-cancel { background: #2b2723; color: #cfc7b7; }
+.site-form .sf-hint { font-size: 0.68rem; color: #8a8272; margin-bottom: 8px; line-height: 1.5; }
+.cat-header.custom h2 { color: #e0b56a; }
+
+/* 潮汐ページ（独立タブ） */
+#panel-tide { display: none; }
+#panel-tide.active { display: block; }
+.tide-empty { text-align: center; padding: 40px 20px; color: #6b6355; font-size: 0.85rem; }
+.tide-empty .geo-btn { margin-top: 14px; }
+.tide-day { margin-bottom: 14px; }
+.tide-day-head {
+  font-size: 0.82rem; font-weight: 700; color: #d99a3f;
+  padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid #3a342a;
+}
+.tide-day-head .tide-day-dow { color: #8a8272; font-weight: 400; margin-left: 6px; }
+.tide-page-stn { font-size: 0.78rem; color: #cfc7b7; margin-bottom: 12px; }
+.tide-page-stn b { color: #7fb5ff; }
 </style>
 </head>
 <body>
@@ -409,16 +479,27 @@ header h1 { font-size: 1.1rem; font-weight: 700; }
 <div class="tabs">
   <button class="tab active" data-panel="news">ニュース</button>
   <button class="tab" data-panel="weather">週間天気</button>
+  <button class="tab" data-panel="tide">潮汐</button>
 </div>
 <div id="progress" style="display:none;"></div>
 <div class="content">
   <div id="panel-news" class="active">
-    <div class="empty">データなし — 更新ボタンを押してください</div>
+    <div id="news-tools"></div>
+    <div id="news-list">
+      <div class="empty">データなし — 更新ボタンを押してください</div>
+    </div>
   </div>
   <div id="panel-weather">
     <div id="geo-weather"></div>
     <div id="jma-weather">
       <div class="empty">データなし — 更新ボタンを押してください</div>
+    </div>
+  </div>
+  <div id="panel-tide">
+    <div id="tide-page">
+      <div class="tide-empty">位置情報から最寄りの潮位観測点を表示します
+        <div><button class="geo-btn" onclick="loadTidePage(true)">現在地の潮汐を表示</button></div>
+      </div>
     </div>
   </div>
 </div>
