@@ -48,14 +48,16 @@
     '#dbgn-panel .dbgn-cnt{margin-left:auto;color:#888;font-size:12px}';
   document.head.appendChild(css);
 
-  var btn = document.createElement('div');
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.setAttribute('aria-label', 'デバッグノートを開く');
   btn.id = 'dbgn-btn';
   btn.textContent = '\u270E';
 
   var panel = document.createElement('div');
   panel.id = 'dbgn-panel';
   panel.innerHTML =
-    '<textarea placeholder="こうしたい・気づいたことをここに"></textarea>' +
+    '<textarea aria-label="デバッグノート" placeholder="こうしたい・気づいたことをここに"></textarea>' +
     '<div class="dbgn-row">' +
     '<button data-act="save">保存</button>' +
     '<button data-act="pub">発行</button>' +
@@ -81,6 +83,7 @@
       publish();
     } else if (act === 'close') {
       panel.style.display = 'none';
+      btn.focus();
     }
   });
 
