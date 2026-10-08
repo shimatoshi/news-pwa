@@ -487,33 +487,93 @@ header h1 {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tide-stn-btn:active { background: #2b2723; border-color: #d99a3f; }
+
+/* 監査で確認した操作・可読性・固定表示の修正 */
+:root { --chrome-height: 120px; }
+[hidden] { display: none !important; }
+.app-chrome { position: sticky; top: 0; z-index: 100; }
+.app-chrome header, .app-chrome .tabs { position: static; }
+.content { max-width: 1080px; margin: 0 auto; }
+.reader-bar { z-index: 1; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.data-date { color: #b5ad9c; font-size: 0.78rem; line-height: 1.6; margin: 8px 0; }
+.reader { transition: none; }
+.news-header { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; border-radius: 8px; }
+.news-title { display: block; font-size: 0.95rem; line-height: 1.6; margin-bottom: 6px; }
+.news-item .meta { display: block; color: #b5ad9c; font-size: 0.75rem; }
+.tab, .area-arrow, .area-count, .cat-header .count, .point-noweek, .tide-ev.tide-none { color: #b5ad9c; }
+.reader-meta, .geo-updated, .empty, .tide-empty { color: #b5ad9c; }
+.today-label, .temp-pt .pt-name, .week-area-name, .hourly-label, .hourly-time, .day-card .day-name, .sf-hint, .tide-browser-head, .tide-day-head .tide-day-dow { color: #b5ad9c !important; }
+.status { opacity: 1; color: #cfc7b7; font-size: 0.78rem; }
+.empty, .tide-empty { font-size: 0.95rem; line-height: 1.7; }
+.area-header, .pref-header { width: 100%; border: 0; color: inherit; text-align: left; font: inherit; }
+.area-title { flex: 1; font-size: 0.95rem; font-weight: 700; }
+.area-header .area-count { margin-left: auto; }
+.pref-header { min-height: 44px; }
+.pref-header[aria-expanded="true"]::before { content: '▼'; color: #d99a3f; margin-right: 6px; }
+.feed-chip .feed-del { width: 28px; height: 28px; min-width: 28px; line-height: normal; border: 1px solid #8a8272; font: inherit; }
+.site-form label { display: block; margin-bottom: 5px; font-size: 0.85rem; color: #e6e0d4; }
+.site-form .sf-hint { font-size: 0.8rem; }
+.form-error { color: #ffb59e; font-size: 0.85rem; line-height: 1.6; margin-bottom: 8px; }
+.data-state, .notice { padding: 10px 12px; font-size: 0.85rem; line-height: 1.6; color: #cfc7b7; background: #221f18; border-radius: 8px; margin-bottom: 10px; }
+.data-state:empty { display: none; }
+.notice { margin: 10px 12px; }
+.text-action { background: #2a2620; color: #e6e0d4; border: 1px solid #a89f8c; border-radius: 6px; padding: 8px 10px; min-height: 36px; font: inherit; cursor: pointer; margin: 5px 0; }
+.geo-refresh { width: 36px; height: 36px; }
+button:disabled { cursor: wait; opacity: 0.7; }
+button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible, textarea:focus-visible { outline: 3px solid #f6cd84; outline-offset: 3px; }
+#tide-detail, .weather-pref, .news-item { scroll-margin-top: calc(var(--chrome-height) + 12px); }
+.tide-spark { position: relative; margin: 22px 0 8px; }
+.tide-bar.now { position: relative; border-top: 3px solid #fff; }
+.tide-bar.now::before { content: '現在'; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font-size: 0.7rem; color: #fff; white-space: nowrap; }
+.tide-data summary { cursor: pointer; padding: 8px 0; color: #d8d0c0; font-size: 0.85rem; }
+.tide-axis { display: flex; justify-content: space-between; font-size: 0.75rem; color: #cfc7b7; }
+.tide-data table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.tide-data th, .tide-data td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #51483b; }
+.tide-data caption { text-align: left; margin: 6px 0; color: #cfc7b7; }
+.tide-data tr.current th::after { content: '（現在の時間帯）'; font-size: 0.75rem; }
+.hourly-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); height: auto; gap: 8px 4px; }
+.hourly-cell { min-height: 88px; justify-content: flex-end; }
+.hourly-gauge { flex: 0 0 auto; max-height: 36px; }
+.hourly-time, .hourly-val, .hourly-mm, .hourly-temp { font-size: 0.72rem; }
+.hourly-time { order: 0; }
+.day-card .day-name, .day-card .weather-text, .day-card .temp, .day-card .pop { font-size: 0.78rem; }
+.day-card .day-name.sat { color: #7fb5ff !important; }
+.day-card .day-name.sun { color: #ffb59e !important; }
+.btn-refresh { bottom: max(16px, env(safe-area-inset-bottom)); right: 16px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
+<div class="app-chrome">
 <header>
   <h1>ニュース & 天気</h1>
   <div class="status" id="status">確認中...</div>
 </header>
-<div class="tabs">
-  <button class="tab active" data-panel="news">ニュース</button>
-  <button class="tab" data-panel="weather">週間天気</button>
-  <button class="tab" data-panel="tide">潮汐</button>
+<div class="tabs" role="tablist" aria-label="表示する情報">
+  <button id="tab-news" class="tab active" role="tab" aria-selected="true" aria-controls="panel-news" data-panel="news">ニュース</button>
+  <button id="tab-weather" class="tab" role="tab" aria-selected="false" aria-controls="panel-weather" tabindex="-1" data-panel="weather">週間天気</button>
+  <button id="tab-tide" class="tab" role="tab" aria-selected="false" aria-controls="panel-tide" tabindex="-1" data-panel="tide">潮汐</button>
 </div>
-<div id="progress" style="display:none;"></div>
+</div>
+<div id="progress" role="status" aria-live="polite" style="display:none;"></div>
+<div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 <div class="content">
-  <div id="panel-news" class="active">
+  <div id="panel-news" class="active" role="tabpanel" aria-labelledby="tab-news">
     <div id="news-tools"></div>
+    <div id="news-state" class="data-state" role="status" aria-live="polite"></div>
     <div id="news-list">
       <div class="empty">データなし — 更新ボタンを押してください</div>
     </div>
   </div>
-  <div id="panel-weather">
+  <div id="panel-weather" role="tabpanel" aria-labelledby="tab-weather" hidden>
+    <div id="weather-state" class="data-state" role="status" aria-live="polite"></div>
     <div id="geo-weather"></div>
     <div id="jma-weather">
       <div class="empty">データなし — 更新ボタンを押してください</div>
     </div>
   </div>
-  <div id="panel-tide">
+  <div id="panel-tide" role="tabpanel" aria-labelledby="tab-tide" hidden>
     <div id="tide-page">
       <div id="tide-detail">
         <div class="tide-empty">現在地、または下の一覧から観測点を選ぶと潮汐を表示します
@@ -524,9 +584,9 @@ header h1 {
     </div>
   </div>
 </div>
-<button class="btn-refresh" id="btn-refresh" title="更新">↻</button>
+<button class="btn-refresh" id="btn-refresh" title="更新" aria-label="ニュースと天気を更新">↻</button>
 
-<div id="reader" class="reader">
+<div id="reader" class="reader" role="dialog" aria-modal="true" aria-labelledby="reader-heading" hidden inert>
   <div class="reader-bar">
     <button class="reader-back" onclick="closeReader()">‹ 戻る</button>
   </div>

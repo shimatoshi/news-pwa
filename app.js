@@ -119,6 +119,15 @@ async function dbClear(storeName) {
   return new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
 }
 
+async function replaceStore(storeName, items) {
+  const db = await getDB();
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  store.clear();
+  items.forEach(item => store.put(item));
+  return new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+}
+
 async function dbGetAll(storeName) {
   const db = await getDB();
   const tx = db.transaction(storeName, 'readonly');
@@ -139,13 +148,51 @@ function showProgress(text) {
   if (el) { el.textContent = text; el.style.display = text ? 'block' : 'none'; }
 }
 
+function announce(text, action) {
+  const el = document.getElementById('notice');
+  el.hidden = !text;
+  el.replaceChildren(document.createTextNode(text));
+  if (action) {
+    const button = document.createElement('button');
+    button.className = 'text-action';
+    button.textContent = action.label;
+    button.addEventListener('click', action.run, { once: true });
+    el.append(' ', button);
+  }
+}
+
+function toggleDisclosure(button) {
+  const expanded = button.getAttribute('aria-expanded') !== 'true';
+  button.setAttribute('aria-expanded', String(expanded));
+  button.parentElement.classList.toggle('open', expanded);
+}
+
+function updateChromeHeight() {
+  const height = document.querySelector('.app-chrome').getBoundingClientRect().height;
+  document.documentElement.style.setProperty('--chrome-height', `${height}px`);
+}
+new ResizeObserver(updateChromeHeight).observe(document.querySelector('.app-chrome'));
+updateChromeHeight();
+
+async function hasLocationPermission() {
+  try { return (await navigator.permissions.query({ name: 'geolocation' })).state === 'granted'; }
+  catch { return false; }
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  finally { clearTimeout(timer); }
+}
+
 // --- フェッチ ---
 async function fetchNewsCategory(cat) {
   const url = `https://api.currentsapi.services/v1/latest-news?language=ja&${cat.query}&apiKey=${CURRENTS_API_KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error('ニュースを取得できません');
   const data = await res.json();
-  if (data.status !== 'ok' || !data.news) return [];
+  if (data.status !== 'ok' || !Array.isArray(data.news)) throw new Error('ニュースの応答を読み取れません');
   return data.news.map((item, i) => ({
     id: `${cat.label}-${i}`,
     title: (item.title || '').replace(/ - [^-]+$/, ''),
@@ -305,8 +352,8 @@ async function getCustomFeeds() {
   return _customFeeds;
 }
 async function saveCustomFeeds(feeds) {
+  await dbPut(STORE_META, { key: 'customFeeds', feeds });
   _customFeeds = feeds;
-  await dbPut(STORE_META, { key: 'customFeeds', feeds }).catch(() => {});
 }
 
 function stripTags(s) { return String(s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -383,14 +430,16 @@ function parseFeed(xmlText, feedName) {
 // カスタムフィードを取得（RSSでなければHTMLから自動発見して再取得）
 async function fetchCustomFeed(feed) {
   let xml = await fetchViaProxy(feed.url);
-  if (!xml) return [];
+  if (!xml) throw new Error('フィード取得失敗');
   const head = xml.slice(0, 1200).toLowerCase();
   if (!head.includes('<rss') && !head.includes('<feed') && !head.includes('<rdf')) {
     const rssUrl = discoverFeedUrl(xml, feed.url);
-    if (!rssUrl) return [];
+    if (!rssUrl) throw new Error('フィードが見つかりません');
     xml = await fetchViaProxy(rssUrl);
-    if (!xml) return [];
+    if (!xml) throw new Error('フィード取得失敗');
   }
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  if (doc.querySelector('parsererror') || !doc.querySelector('rss, feed, RDF')) throw new Error('フィードの形式が不正です');
   return parseFeed(xml, feed.name);
 }
 
@@ -412,22 +461,23 @@ async function prefetchBodies(items) {
         item.byline = art.byline;
         item.siteName = art.siteName;
         if (!item.image && art.image) { item.image = art.image; markImage(item.id, art.image); }
+        const current = await dbGet(STORE_NEWS, item.id);
+        if (current?.link !== item.link) continue;
         await dbPut(STORE_NEWS, item).catch(() => {});
         markSaved(item.id);
       }
       done++;
-      showProgress(`記事を保存中... ${done}/${total}`);
+      // 本文保存は一覧の保存済み表示で伝える。手動更新の進捗を上書きしない。
     }
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-  showProgress('');
 }
 
 async function fetchPrefWeather(code, name) {
   // 天気予報と警報・注意報を並行取得（警報は失敗しても天気は出す）
   const [res, warn] = await Promise.all([
-    fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`),
+    fetchWithTimeout(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`),
     fetchWarnings(code).catch(() => null),
   ]);
   if (!res.ok) return null;
@@ -483,7 +533,7 @@ async function fetchPrefWeather(code, name) {
 
 // 気象庁の警報・注意報を府県コードで取得 → 区域コードごとの警報配列＋見出し文に整形
 async function fetchWarnings(code) {
-  const res = await fetch(`https://www.jma.go.jp/bosai/warning/data/warning/${code}.json`);
+  const res = await fetchWithTimeout(`https://www.jma.go.jp/bosai/warning/data/warning/${code}.json`);
   if (!res.ok) return null;
   const w = await res.json();
   const byArea = {};
@@ -604,6 +654,7 @@ function getTimeSlot() {
 async function shouldAutoFetch() {
   const meta = await dbGet(STORE_META, 'lastFetch');
   if (!meta) return true;
+  if (meta.failed && Date.now() - new Date(meta.timestamp).getTime() > 5 * 60 * 1000) return true;
   return !(meta.date === new Date().toDateString() && meta.slot === getTimeSlot());
 }
 
@@ -620,7 +671,7 @@ function renderNews(newsItems) {
   const panel = document.getElementById('news-list');
   if (!panel) return;
   if (!newsItems || newsItems.length === 0) {
-    panel.innerHTML = '<div class="empty">ニュースデータなし</div>';
+    panel.innerHTML = '<div class="empty">表示できるニュースはありません。<br>更新を試すか、サイトを追加してください。</div>';
     return;
   }
   for (const item of newsItems) newsById[item.id] = item;
@@ -642,14 +693,14 @@ function renderNews(newsItems) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
       const saved = item.body ? '<span class="offline-badge" title="オフライン保存済み">📥</span>' : '';
       const thumb = item.image ? `<img class="news-thumb" data-id="${escapeHtml(item.id)}" src="${escapeHtml(item.image)}" loading="lazy" alt="" onerror="this.remove()">` : '';
-      html += `<div class="news-item" data-id="${escapeHtml(item.id)}" onclick="openReader(this.dataset.id)">
-          <div class="news-header">
-            <div class="news-main">
-              <h3>${escapeHtml(item.title)}</h3>
-              <div class="meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${saved}</div>
-            </div>
+      html += `<div class="news-item" data-id="${escapeHtml(item.id)}">
+          <button class="news-header" onclick="openReader(this.closest('.news-item').dataset.id)">
+            <span class="news-main">
+              <span class="news-title">${escapeHtml(item.title)}</span>
+              <span class="meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${saved}</span>
+            </span>
             ${thumb}
-          </div>
+          </button>
         </div>`;
     }
     html += `</div>`;
@@ -663,9 +714,15 @@ function bodyToHtml(text) {
     .map(p => `<p>${escapeHtml(p)}</p>`).join('');
 }
 
+let readerRequest = 0;
+let readerReturnFocus = null;
+let readerBackgroundScroll = 0;
 async function openReader(id) {
   const item = newsById[id];
   if (!item) return;
+  const request = ++readerRequest;
+  readerReturnFocus = document.activeElement;
+  readerBackgroundScroll = window.scrollY;
   const overlay = document.getElementById('reader');
   const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 
@@ -678,19 +735,28 @@ async function openReader(id) {
     const hero = item.image ? `<img class="reader-hero" src="${escapeHtml(item.image)}" alt="" onerror="this.remove()">` : '';
     overlay.querySelector('.reader-content').innerHTML = `
       ${hero}
-      <h2 class="reader-title">${escapeHtml(item.title)}</h2>
+      <h2 class="reader-title" id="reader-heading">${escapeHtml(item.title)}</h2>
       <div class="reader-meta">${date}${item.source ? ' · ' + escapeHtml(item.source) : ''}${item.siteName ? ' · ' + escapeHtml(item.siteName) : ''}</div>
-      <div class="reader-text">${bodyHtml}</div>
+      <div class="reader-text" role="status" aria-live="polite">${bodyHtml}</div>
       <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" class="read-more">元記事を開く →</a>`;
   };
 
+  overlay.hidden = false;
+  overlay.inert = false;
   overlay.classList.add('open');
+  document.querySelector('.app-chrome').inert = true;
+  document.querySelector('.content').inert = true;
+  document.getElementById('btn-refresh').inert = true;
+  document.getElementById('notice').inert = true;
+  document.getElementById('dbgn-btn')?.setAttribute('inert', '');
   document.body.style.overflow = 'hidden';
   renderBody(item.body ? 'cached' : (navigator.onLine ? 'loading' : 'offline'));
+  overlay.scrollTop = 0;
+  overlay.querySelector('.reader-back').focus({ preventScroll: true });
 
   // 未保存かつオンラインなら全文を取りに行く
   if (!item.body && navigator.onLine) {
-    const art = await fetchArticleBody(item.link);
+    const art = await fetchArticleBody(item.link).catch(() => null);
     if (art && art.body) {
       item.body = art.body;
       item.byline = art.byline;
@@ -700,14 +766,35 @@ async function openReader(id) {
       markSaved(id);
     }
     // オーバーレイがまだ同じ記事を表示中なら更新
-    if (overlay.classList.contains('open')) renderBody(item.body ? 'cached' : 'fail');
+    if (request === readerRequest && overlay.classList.contains('open')) renderBody(item.body ? 'cached' : 'fail');
   }
 }
 
 function closeReader() {
-  document.getElementById('reader').classList.remove('open');
+  ++readerRequest;
+  const reader = document.getElementById('reader');
+  reader.classList.remove('open');
+  reader.hidden = true;
+  reader.inert = true;
+  document.querySelector('.app-chrome').inert = false;
+  document.querySelector('.content').inert = false;
+  document.getElementById('btn-refresh').inert = false;
+  document.getElementById('notice').inert = false;
+  document.getElementById('dbgn-btn')?.removeAttribute('inert');
   document.body.style.overflow = '';
+  window.scrollTo(0, readerBackgroundScroll);
+  if (readerReturnFocus?.isConnected) readerReturnFocus.focus({ preventScroll: true });
+  else document.getElementById('tab-news').focus({ preventScroll: true });
 }
+
+document.getElementById('reader').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeReader(); return; }
+  if (event.key !== 'Tab') return;
+  const targets = [...event.currentTarget.querySelectorAll('button,a[href]')].filter(el => !el.disabled);
+  const first = targets[0], last = targets[targets.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
 
 function markSaved(id) {
   const el = document.querySelector(`.news-item[data-id="${CSS.escape(id)}"] .meta`);
@@ -728,80 +815,118 @@ function markImage(id, src) {
 }
 
 // --- カスタムフィードのUI ---
+let addingFeed = false;
+let feedRequest = 0;
 function renderNewsTools() {
   const el = document.getElementById('news-tools');
   if (!el) return;
   const feeds = _customFeeds || [];
   const chips = feeds.map((f, i) =>
-    `<span class="feed-chip custom-cat">${escapeHtml(f.name)}<span class="feed-del" title="削除" onclick="removeCustomFeed(${i})">✕</span></span>`
+    `<span class="feed-chip custom-cat">${escapeHtml(f.name)}<button type="button" class="feed-del" aria-label="${escapeHtml(f.name)}を削除" onclick="removeCustomFeed(${i})">✕</button></span>`
   ).join('');
-  el.innerHTML =
-    `<div class="news-tools-row">
-      <button class="add-site-btn" onclick="toggleSiteForm()">＋ サイトを追加</button>
+  el.innerHTML = `<div class="news-tools-row">
+    <button id="site-toggle" class="add-site-btn" aria-expanded="false" aria-controls="site-form" onclick="toggleSiteForm()">＋ サイトを追加</button>
     </div>
-    <div class="site-form" id="site-form">
-      <div class="sf-hint">ニュースサイト/ブログのURLを入力（RSS・Atomフィード、またはトップページ）。トップページの場合はフィードを自動検出します。</div>
-      <input id="sf-url" type="url" inputmode="url" placeholder="https://example.com/feed  など">
-      <input id="sf-name" type="text" placeholder="表示名（任意）">
+    <form class="site-form" id="site-form" novalidate onsubmit="submitCustomFeed(event)">
+      <p class="sf-hint" id="sf-hint">RSS・Atomフィード、またはニュースサイトのトップページのURLを指定してください。トップページからはフィードを探します。</p>
+      <label for="sf-url">サイト・フィードのURL（必須）</label>
+      <input id="sf-url" type="url" inputmode="url" required aria-describedby="sf-hint sf-error" placeholder="https://example.com/feed">
+      <label for="sf-name">表示名（任意）</label>
+      <input id="sf-name" type="text" placeholder="例：科学ニュース" aria-describedby="sf-error">
+      <p id="sf-error" class="form-error" role="alert"></p>
+      <p id="sf-progress" role="status" aria-live="polite"></p>
       <div class="site-form-row">
-        <button class="sf-add" onclick="submitCustomFeed()">追加</button>
-        <button class="sf-cancel" onclick="toggleSiteForm()">キャンセル</button>
+        <button class="sf-add" type="submit">追加</button>
+        <button class="sf-cancel" type="button" onclick="toggleSiteForm()">キャンセル</button>
       </div>
-    </div>` +
-    (feeds.length ? `<div class="feed-chips">${chips}</div>` : '');
+    </form>` + (feeds.length ? `<div class="feed-chips">${chips}</div>` : '');
 }
 
 function toggleSiteForm() {
   const f = document.getElementById('site-form');
-  if (f) f.classList.toggle('open');
+  if (!f) return;
+  const open = !f.classList.contains('open');
+  f.classList.toggle('open', open);
+  document.getElementById('site-toggle').setAttribute('aria-expanded', String(open));
+  if (!open) {
+    ++feedRequest;
+    addingFeed = false;
+    f.removeAttribute('aria-busy');
+    f.querySelector('.sf-add').disabled = false;
+    document.getElementById('sf-progress').textContent = '';
+  }
+  (open ? document.getElementById('sf-url') : document.getElementById('site-toggle')).focus();
 }
 
-async function submitCustomFeed() {
+async function submitCustomFeed(event) {
+  event?.preventDefault();
+  if (addingFeed) return;
+  if (refreshing) { announce('更新が終わってからサイトを追加してください。'); return; }
   const urlEl = document.getElementById('sf-url');
   const nameEl = document.getElementById('sf-name');
-  if (!urlEl) return;
-  let url = (urlEl.value || '').trim();
-  if (!url) return;
-  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-  let name = (nameEl.value || '').trim();
-  const feeds = await getCustomFeeds();
-  if (feeds.some(f => f.url === url)) { toggleSiteForm(); return; }
-  if (!name) name = hostOf(url).replace(/^www\./, '') || 'カスタム';
-
-  showProgress(`${name} を取得中...`);
-  let items = [];
-  try {
-    items = await fetchCustomFeed({ name, url });
-  } catch (e) { console.warn('カスタムフィード取得失敗:', e); }
-  showProgress('');
-
-  if (!items.length) {
-    alert('記事を取得できませんでした。\nRSS/AtomフィードのURLを直接指定すると確実です。');
-    return;
+  const form = document.getElementById('site-form');
+  const error = document.getElementById('sf-error');
+  error.textContent = '';
+  urlEl.removeAttribute('aria-invalid'); nameEl.removeAttribute('aria-invalid');
+  let url = urlEl.value.trim();
+  const fail = (message, target = urlEl) => {
+    error.textContent = message; target.setAttribute('aria-invalid', 'true'); target.focus();
+  };
+  if (!url) { fail('URLを入力してください。'); return; }
+  if (!/^https?:\/\//i.test(url)) {
+    if (url.includes('://')) { fail('httpまたはhttpsのURLを入力してください。'); return; }
+    url = 'https://' + url;
   }
-  feeds.push({ name, url });
-  await saveCustomFeeds(feeds);
-  renderNewsTools();
-  urlEl.value = ''; nameEl.value = '';
-
-  await dbPut(STORE_NEWS, items).catch(() => {});
-  const all = await dbGetAll(STORE_NEWS);
-  renderNews(all);
-  if (navigator.onLine) prefetchBodies(items).catch(() => {});
+  try { const parsed = new URL(url); if (!parsed.hostname.includes('.') || parsed.username || parsed.password) throw new Error(); url = parsed.href; }
+  catch { fail('URLの形式を確認してください。例：https://example.com/feed'); return; }
+  let name = nameEl.value.trim() || hostOf(url).replace(/^www\./, '') || 'カスタム';
+  if (!navigator.onLine) { fail('オフラインです。接続してからもう一度追加してください。'); return; }
+  addingFeed = true;
+  const request = ++feedRequest;
+  const add = form.querySelector('.sf-add');
+  add.disabled = true; form.setAttribute('aria-busy', 'true');
+  document.getElementById('sf-progress').textContent = `${name} のフィードを取得中…`;
+  try {
+    const feeds = await getCustomFeeds();
+    if (request !== feedRequest) return;
+    if (feeds.some(f => f.url === url)) { fail('このURLは追加済みです。'); return; }
+    if (NEWS_CATEGORIES.some(c => c.label === name) || feeds.some(f => f.name === name)) { fail('この表示名は使用中です。別の表示名を入力してください。', nameEl); return; }
+    const items = await fetchCustomFeed({ name, url });
+    if (request !== feedRequest) return;
+    if (!items.length) { fail('記事を取得できませんでした。接続とURLを確認してください。RSS・AtomのURLを直接指定する方法もあります。'); return; }
+    form.querySelector('.sf-cancel').disabled = true;
+    await saveCustomFeeds([...feeds, { name, url }]);
+    await dbPut(STORE_NEWS, items.map(item => ({ ...item, feedUrl: url })));
+    renderNewsTools();
+    renderNews(await dbGetAll(STORE_NEWS));
+    document.getElementById('site-toggle').focus();
+    announce(`${name} を追加しました。`);
+    if (navigator.onLine) prefetchBodies(items).catch(() => {});
+  } catch (e) {
+    if (request === feedRequest) fail('サイトを追加できませんでした。入力を残しています。もう一度お試しください。');
+  } finally {
+    if (request === feedRequest) {
+      addingFeed = false;
+      form.removeAttribute('aria-busy');
+      add.disabled = false;
+      form.querySelector('.sf-cancel').disabled = false;
+      if (form.isConnected) document.getElementById('sf-progress').textContent = '';
+    }
+  }
 }
 
 async function removeCustomFeed(idx) {
+  if (addingFeed || refreshing) { announce('更新が終わってから削除してください。'); return; }
   const feeds = await getCustomFeeds();
   const removed = feeds[idx];
-  if (!removed) return;
-  feeds.splice(idx, 1);
-  await saveCustomFeeds(feeds);
-  renderNewsTools();
-  // そのフィードの記事をDB・表示から除去
-  const remaining = (await dbGetAll(STORE_NEWS)).filter(n => n.category !== removed.name);
-  await dbClear(STORE_NEWS);
-  if (remaining.length) await dbPut(STORE_NEWS, remaining);
-  renderNews(remaining);
+  if (!removed || !confirm(`${removed.name} の登録と保存した記事を削除しますか？`)) return;
+  const all = await dbGetAll(STORE_NEWS);
+  const remaining = all.filter(n => !(n.custom && (n.feedUrl ? n.feedUrl === removed.url : n.category === removed.name)));
+  await saveCustomFeeds(feeds.filter((_, i) => i !== idx));
+  await replaceStore(STORE_NEWS, remaining);
+  renderNewsTools(); renderNews(remaining);
+  document.getElementById('site-toggle').focus();
+  announce(`${removed.name} を削除しました。`);
 }
 
 function renderHourlyPops(hourlyPops) {
@@ -814,7 +939,7 @@ function renderHourlyPops(hourlyPops) {
     const color = val >= 60 ? '#e94560' : val >= 30 ? '#ff9800' : '#4fc3f7';
     html += `<div class="hourly-cell">
       <div class="hourly-time">${hour}</div>
-      <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
+      <div class="hourly-gauge" style="height:${Math.max(Math.round(val * 0.36), 2)}px;background:${color}"></div>
       <div class="hourly-val">${h.pop}%</div>
     </div>`;
   }
@@ -834,7 +959,7 @@ function renderHourlyForecast(hourly, hours = 12) {
     const mmTxt = mm > 0 ? (mm >= 10 ? Math.round(mm) : mm.toFixed(1)) + 'mm' : '';
     html += `<div class="hourly-cell">
       <div class="hourly-time">${hr}時</div>
-      <div class="hourly-gauge" style="height:${Math.max(val, 4)}%;background:${color}"></div>
+      <div class="hourly-gauge" style="height:${Math.max(Math.round(val * 0.36), 2)}px;background:${color}"></div>
       <div class="hourly-val">${val}%</div>
       <div class="hourly-mm">${mmTxt}</div>
       <div class="hourly-temp">${Math.round(hh.temp)}°</div>
@@ -852,7 +977,7 @@ function renderWarnBadges(warnings) {
 }
 
 function renderPrefWeather(item) {
-  let html = '';
+  let html = `<p class="data-date">気象庁の予報・注意報／地点別週間予報：Open-Meteo<br>取得：${escapeHtml(new Date(item.fetchedAt).toLocaleString('ja-JP'))}</p>`;
   // 県全体の警報見出し（出ているときだけ）
   if (item.headline) {
     html += `<div class="warn-headline warn-${item.maxLevel || 'advisory'}">⚠️ ${item.headline}</div>`;
@@ -874,7 +999,7 @@ function renderPrefWeather(item) {
   }
   // 週間予報：予報地点ごと（千葉 / 銚子 / 館山 …）。どの地点の予報か明示。
   for (const p of (item.tempPoints || [])) {
-    const today = (p.min || p.max) ? ` <span class="point-now">今日 ${p.min || '-'}°/${p.max || '-'}°</span>` : '';
+    const today = (p.min || p.max) ? ` <span class="point-now">今日 最低${p.min || '-'}°／最高${p.max || '-'}°</span>` : '';
     html += `<div class="point-week"><div class="point-name">📍 ${p.name}${today}</div>`;
     html += renderHourlyForecast(p.hourly);  // 時間別（現在から12時間ぶん表示）
     if (p.weekly && p.weekly.length > 0) {
@@ -888,7 +1013,7 @@ function renderPrefWeather(item) {
           <div class="day-name ${dayClass}">${date.getMonth()+1}/${date.getDate()}(${dow})</div>
           <div class="weather-icon">${wic}</div>
           <div class="weather-text">${wtxt}</div>
-          <div class="temp"><span class="hi">${Math.round(d.tmax)}°</span> / <span class="lo">${Math.round(d.tmin)}°</span></div>
+          <div class="temp"><span class="hi">最高${Math.round(d.tmax)}°</span> / <span class="lo">最低${Math.round(d.tmin)}°</span></div>
           ${d.pop != null ? `<div class="pop">${d.pop}%</div>` : ''}
         </div>`;
       }
@@ -903,42 +1028,37 @@ function renderPrefWeather(item) {
 
 function renderWeather(weatherItems) {
   const panel = document.getElementById('jma-weather');
-  if (!weatherItems || weatherItems.length === 0) {
-    panel.innerHTML = '<div class="empty">天気データなし</div>';
+  if (!weatherItems?.length) {
+    panel.innerHTML = '<div class="empty">天気はまだ表示できません。更新をお試しください。</div>';
     return;
   }
-  // コードでルックアップ
-  const byCode = {};
-  for (const item of weatherItems) byCode[item.region] = item;
-
+  const expanded = new Set([...panel.querySelectorAll('[aria-expanded="true"]')].map(el => el.id));
+  const focusedId = panel.contains(document.activeElement) ? document.activeElement.id : null;
+  const scroll = window.scrollY;
+  const byCode = Object.fromEntries(weatherItems.map(item => [item.region, item]));
   let html = '';
-  for (const area of WEATHER_AREAS) {
+  WEATHER_AREAS.forEach((area, index) => {
     const prefs = area.codes.filter(([code]) => byCode[code]);
-    if (prefs.length === 0) continue;
-
-    html += `<div class="weather-area">
-      <div class="area-header" onclick="this.parentElement.classList.toggle('open')">
-        <span class="area-arrow">▶</span>
-        <h3>${area.region}</h3>
-        <span class="area-count">${prefs.length}</span>
-      </div>
-      <div class="area-body">`;
+    if (!prefs.length) return;
+    const id = `weather-region-${index}`, isOpen = expanded.has(id);
+    html += `<section class="weather-area${isOpen ? ' open' : ''}">
+      <button id="${id}" class="area-header" aria-expanded="${isOpen}" aria-controls="${id}-body" onclick="toggleDisclosure(this)">
+        <span class="area-arrow" aria-hidden="true">▶</span><span class="area-title">${escapeHtml(area.region)}</span>
+        <span class="area-count">${prefs.length}<span class="sr-only">地域</span></span>
+      </button><div class="area-body" id="${id}-body">`;
     for (const [code, name] of prefs) {
-      const item = byCode[code];
-      html += `<div class="weather-pref">
-        <div class="pref-header" onclick="this.parentElement.classList.toggle('open')">
-          <span>${name}</span>
-          <span class="pref-summary">${(() => {
-            const t0 = item.subAreas && item.subAreas[0] && item.subAreas[0].todayTomorrow[0];
-            return t0 ? (WEATHER_CODES[t0.code]||[''])[1] + ' ' + (WEATHER_CODES[t0.code]||['?'])[0] : '';
-          })()}</span>
-        </div>
-        <div class="pref-body">${renderPrefWeather(item)}</div>
-      </div>`;
+      const item = byCode[code], prefId = `weather-pref-${code}`, prefOpen = expanded.has(prefId);
+      const t0 = item.subAreas?.[0]?.todayTomorrow?.[0];
+      html += `<section class="weather-pref${prefOpen ? ' open' : ''}">
+        <button id="${prefId}" class="pref-header" aria-expanded="${prefOpen}" aria-controls="${prefId}-body" onclick="toggleDisclosure(this)">
+          <span>${escapeHtml(name)}</span><span class="pref-summary">${t0 ? (WEATHER_CODES[t0.code] || ['', ''])[1] + ' ' + (WEATHER_CODES[t0.code] || ['?'])[0] : ''}</span>
+        </button><div class="pref-body" id="${prefId}-body">${renderPrefWeather(item)}</div></section>`;
     }
-    html += `</div></div>`;
-  }
+    html += '</div></section>';
+  });
   panel.innerHTML = html;
+  if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
+  window.scrollTo(0, scroll);
 }
 
 // --- 現在地ピンポイント天気（Open-Meteo） ---
@@ -1093,6 +1213,22 @@ async function fetchGeoWeather() {
   };
 }
 
+function localDate(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function renderTideGraph(day) {
+  const hs = day.hourly || [];
+  const values = hs.filter(v => Number.isFinite(v) && v !== 999);
+  if (!values.length) return '<p>時間別の潮位データはありません。</p>';
+  const min = Math.min(...values), max = Math.max(...values), range = Math.max(1, max - min);
+  const nowHour = day.date === localDate() ? new Date().getHours() : -1;
+  const bars = hs.map((v, hour) => `<div class="tide-bar${hour === nowHour ? ' now' : ''}" style="height:${Number.isFinite(v) && v !== 999 ? Math.max(4, Math.round((v - min) / range * 100)) : 0}%"></div>`).join('');
+  const rows = hs.map((v, hour) => `<tr${hour === nowHour ? ' class="current"' : ''}><th scope="row">${hour}時</th><td>${Number.isFinite(v) && v !== 999 ? `${v} cm` : 'データなし'}</td></tr>`).join('');
+  return `<div class="tide-spark" aria-hidden="true">${bars}</div><div class="tide-axis" aria-hidden="true"><span>0時</span><span>12時</span><span>23時</span></div>
+    <details class="tide-data"><summary>時間ごとの潮位を読む</summary><table><caption>${escapeHtml(day.date)}の予測潮位（cm）</caption><thead><tr><th scope="col">時刻</th><th scope="col">潮位</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+}
+
 // 潮汐カード（最寄り観測点の今日の満潮/干潮＋24時間の潮位カーブ）
 function renderTide(tide) {
   if (!tide || !tide.days || !tide.days.length) return '';
@@ -1100,17 +1236,7 @@ function renderTide(tide) {
   const fmt = evs => evs.length
     ? evs.map(e => `<span class="tide-ev"><b>${e.time}</b> ${e.cm}cm</span>`).join('')
     : '<span class="tide-ev tide-none">—</span>';
-  // 24時間の潮位スパークライン（現在時刻を強調）
-  const hs = today.hourly;
-  const mn = Math.min(...hs), mx = Math.max(...hs), rng = Math.max(1, mx - mn);
-  const isToday = today.date === new Date().toISOString().slice(0, 10);
-  const nowH = isToday ? new Date().getHours() : -1;
-  let spark = '<div class="tide-spark">';
-  hs.forEach((v, i) => {
-    const ph = Math.round((v - mn) / rng * 100);
-    spark += `<div class="tide-bar${i === nowH ? ' now' : ''}" style="height:${Math.max(ph, 4)}%" title="${i}時 ${v}cm"></div>`;
-  });
-  spark += '</div>';
+  const spark = renderTideGraph(today);
   return `<div class="tide-card">
     <div class="tide-head">🌊 潮汐 <span class="tide-stn">${tide.station.name}</span></div>
     <div class="tide-rows">
@@ -1127,7 +1253,7 @@ function renderGeoWeather(data) {
   if (!data || !data.current) {
     el.innerHTML = `<div class="geo-card geo-empty">
       <div>📍 現在地の天気</div>
-      <button class="geo-btn" onclick="loadGeoWeather(true)">現在地を表示</button>
+      <button class="geo-btn" onclick="loadGeoWeather(true, true)">現在地を表示</button>
     </div>`;
     return;
   }
@@ -1149,7 +1275,7 @@ function renderGeoWeather(data) {
       <div class="day-name ${dayClass}">${date.getMonth()+1}/${date.getDate()}(${dow})</div>
       <div class="weather-icon">${dicon}</div>
       <div class="weather-text">${wmo(d.code)[0]}</div>
-      <div class="temp"><span class="hi">${Math.round(d.tmax)}°</span> / <span class="lo">${Math.round(d.tmin)}°</span></div>
+      <div class="temp"><span class="hi">最高${Math.round(d.tmax)}°</span> / <span class="lo">最低${Math.round(d.tmin)}°</span></div>
       ${d.pop != null ? `<div class="pop">${d.pop}%</div>` : ''}
     </div>`;
   }
@@ -1158,7 +1284,7 @@ function renderGeoWeather(data) {
   el.innerHTML = `<div class="geo-card">
     <div class="geo-head">
       <div class="geo-name">📍 ${data.name}</div>
-      <button class="geo-refresh" onclick="loadGeoWeather(true)" title="現在地を更新">↻</button>
+      <button class="geo-refresh" onclick="loadGeoWeather(true, true)" aria-label="現在地の天気を更新" title="現在地を更新">↻</button>
     </div>
     <div class="geo-now">
       <span class="geo-icon">${icon}</span>
@@ -1174,13 +1300,14 @@ function renderGeoWeather(data) {
   </div>`;
 }
 
-async function loadGeoWeather(force) {
+async function loadGeoWeather(force, userRequested = false) {
   // キャッシュ表示
   const cached = await dbGet(STORE_META, 'geoWeather');
   if (cached && !force) renderGeoWeather(cached);
   else if (!cached) renderGeoWeather(null);
 
   if (!navigator.onLine) return;
+  if (!userRequested && !await hasLocationPermission()) return;
   if (!force && cached) {
     // キャッシュが新しければ（30分以内）再取得しない
     if (Date.now() - new Date(cached.fetchedAt).getTime() < 30 * 60 * 1000) return;
@@ -1197,11 +1324,12 @@ async function loadGeoWeather(force) {
 
 // --- 潮汐タブ（独立ページ：現在地 + 全国の観測点） ---
 const TIDE_REGION_ORDER = ['北海道', '東北', '関東', '北陸', '東海', '近畿', '中国', '四国', '九州', '沖縄'];
+let tideRequest = 0;
 let _tideUserSelected = false;  // ユーザーが観測点を選んだら現在地で上書きしない
 
 function renderTidePageMsg(msg, target) {
   const el = target || document.getElementById('tide-detail');
-  if (el) el.innerHTML = `<div class="tide-empty">${msg}</div>`;
+  if (el) el.innerHTML = `<div class="tide-empty" role="status" aria-live="polite">${msg}</div>`;
 }
 
 // 潮汐カード（観測点1つの今日＋2日分）を target 要素に描画
@@ -1212,7 +1340,7 @@ function renderTidePage(tide, target) {
     renderTidePageMsg('潮汐データがありません', el);
     return;
   }
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = localDate();
   const caption = tide.nearest ? '📍 現在地の最寄り' : '🌊 潮位観測点';
   let html = `<div class="tide-page-stn">${caption}: <b>${escapeHtml(tide.station.name)}</b></div>`;
   for (const day of tide.days) {
@@ -1223,15 +1351,7 @@ function renderTidePage(tide, target) {
     const fmt = evs => evs.length
       ? evs.map(e => `<span class="tide-ev"><b>${e.time}</b> ${e.cm}cm</span>`).join('')
       : '<span class="tide-ev tide-none">—</span>';
-    const hs = day.hourly;
-    const mn = Math.min(...hs), mx = Math.max(...hs), rng = Math.max(1, mx - mn);
-    const nowH = isToday ? new Date().getHours() : -1;
-    let spark = '<div class="tide-spark">';
-    hs.forEach((v, i) => {
-      const ph = Math.round((v - mn) / rng * 100);
-      spark += `<div class="tide-bar${i === nowH ? ' now' : ''}" style="height:${Math.max(ph, 4)}%" title="${i}時 ${v}cm"></div>`;
-    });
-    spark += '</div>';
+    const spark = renderTideGraph(day);
     html += `<div class="tide-day">
       <div class="tide-day-head">${label}${isToday ? ' <span class="tide-day-dow">今日</span>' : ` <span class="tide-day-dow">(${dow})</span>`}</div>
       <div class="tide-card">
@@ -1259,12 +1379,12 @@ async function renderTideBrowser() {
     const list = byRegion[r];
     if (!list || !list.length) continue;
     html += `<div class="weather-area tide-region">
-      <div class="area-header" onclick="this.parentElement.classList.toggle('open')">
-        <span class="area-arrow">▶</span>
-        <h3>${r}</h3>
-        <span class="area-count">${list.length}</span>
-      </div>
-      <div class="area-body"><div class="tide-stn-grid">`;
+      <button class="area-header" aria-expanded="false" aria-controls="tide-region-${TIDE_REGION_ORDER.indexOf(r)}" onclick="toggleDisclosure(this)">
+        <span class="area-arrow" aria-hidden="true">▶</span>
+        <span class="area-title">${r}</span>
+        <span class="area-count">${list.length}<span class="sr-only">観測点</span></span>
+      </button>
+      <div class="area-body" id="tide-region-${TIDE_REGION_ORDER.indexOf(r)}"><div class="tide-stn-grid">`;
     for (const s of list) {
       html += `<button class="tide-stn-btn" onclick="selectTideStation('${escapeHtml(s.code)}')">${escapeHtml(s.name)}</button>`;
     }
@@ -1276,154 +1396,191 @@ async function renderTideBrowser() {
 
 // 観測点を選んで潮汐を表示（詳細欄に描画＋先頭へスクロール）
 async function selectTideStation(code) {
-  const stations = await loadTideStations();
-  const st = stations && stations.find(s => s.code === code);
-  if (!st) return;
+  const request = ++tideRequest;
   _tideUserSelected = true;
+  const stations = await loadTideStations();
+  if (request !== tideRequest) return;
+  const st = stations?.find(s => s.code === code);
+  if (!st) return;
   const detail = document.getElementById('tide-detail');
-  if (detail) {
-    detail.innerHTML = `<div class="tide-empty">${escapeHtml(st.name)} の潮汐を取得中…</div>`;
-    detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  detail.innerHTML = `<div class="tide-empty" role="status">${escapeHtml(st.name)} の潮汐を取得中…</div>`;
+  detail.scrollIntoView({ behavior: 'auto', block: 'start' });
+  const cached = await dbGet(STORE_META, `tide:${code}`).catch(() => null);
+  if (request !== tideRequest) return;
+  if (!navigator.onLine) {
+    if (cached?.tide) { renderTidePage(cached.tide, detail); announce('オフラインのため保存済みの潮汐を表示しています。'); }
+    else renderTidePageMsg('オフラインのため取得できません。接続後に観測点を選び直してください。', detail);
+    return;
   }
-  if (!navigator.onLine) { renderTidePageMsg('オフラインのため取得できません', detail); return; }
   const tide = await fetchTideByStation(st).catch(() => null);
-  if (tide) renderTidePage(tide, detail);
-  else renderTidePageMsg(`${escapeHtml(st.name)} の潮汐を取得できませんでした`, detail);
+  if (request !== tideRequest) return;
+  if (tide) {
+    await dbPut(STORE_META, { key: `tide:${code}`, tide, fetchedAt: new Date().toISOString() }).catch(() => {});
+    if (request === tideRequest) renderTidePage(tide, detail);
+  } else {
+    renderTidePageMsg(`${escapeHtml(st.name)} の潮汐を取得できませんでした。別の観測点を選ぶか、もう一度お試しください。<div><button class="geo-btn" onclick="selectTideStation('${escapeHtml(code)}')">再試行</button></div>`, detail);
+  }
 }
 
 async function loadTidePage(force) {
-  renderTideBrowser();  // 全国リスト（初回のみ構築）
-  if (_tideUserSelected && !force) return;  // ユーザーの観測点選択を尊重
-
-  // 現在地天気で取得済みの潮汐があれば流用（二重取得を避ける）
+  await renderTideBrowser();
+  if (_tideUserSelected && !force) return;
+  if (force) _tideUserSelected = false;
+  const request = ++tideRequest;
   const geo = await dbGet(STORE_META, 'geoWeather').catch(() => null);
   const own = await dbGet(STORE_META, 'tidePage').catch(() => null);
-  let tide = null, ts = null;
-  if (geo && geo.tide) { tide = geo.tide; ts = geo.fetchedAt; }
-  if (own && own.tide && (!ts || new Date(own.fetchedAt) > new Date(ts))) { tide = own.tide; ts = own.fetchedAt; }
-  if (tide) { tide.nearest = true; if (!force) renderTidePage(tide); }
-
-  if (!navigator.onLine) { if (!tide) renderTidePageMsg('オフライン: 現在地の潮汐データがありません'); return; }
-  if (!force && tide && ts && Date.now() - new Date(ts).getTime() < 60 * 60 * 1000) return;
-  if (!tide) renderTidePageMsg('現在地を取得中…（または下の一覧から選択）');
-
+  if (request !== tideRequest) return;
+  const candidates = [geo?.tide ? { tide: geo.tide, fetchedAt: geo.fetchedAt } : null, own].filter(x => x?.tide);
+  candidates.sort((a, b) => new Date(b.fetchedAt) - new Date(a.fetchedAt));
+  const cached = candidates[0];
+  if (cached && !force) renderTidePage(cached.tide);
+  if (!navigator.onLine) {
+    if (!cached) renderTidePageMsg('オフラインです。現在地の保存済み潮汐はありません。');
+    else if (force) renderTidePage(cached.tide);
+    return;
+  }
+  if (!force && cached && Date.now() - new Date(cached.fetchedAt) < 60 * 60 * 1000) return;
+  if (!force && !await hasLocationPermission()) {
+    if (!cached) renderTidePageMsg('現在地、または下の一覧から観測点を選択してください。<div><button class="geo-btn" onclick="loadTidePage(true)">現在地の潮汐を表示</button></div>');
+    return;
+  }
+  if (request !== tideRequest) return;
+  renderTidePageMsg('現在地の潮汐を取得中…（下の一覧からも選択できます）');
   try {
     const coords = await getPosition();
+    if (request !== tideRequest) return;
     const fresh = await fetchTide(coords.latitude, coords.longitude);
-    if (fresh && !_tideUserSelected) {
+    if (request !== tideRequest) return;
+    if (fresh) {
       await dbPut(STORE_META, { key: 'tidePage', tide: fresh, fetchedAt: new Date().toISOString() });
-      renderTidePage(fresh);
-    } else if (!tide && !_tideUserSelected) {
-      renderTidePageMsg('最寄りの観測点が取得できませんでした。下の一覧から選択してください');
+      if (request === tideRequest) renderTidePage(fresh);
+    } else {
+      renderTidePageMsg('最寄りの観測点を取得できませんでした。下の一覧から選択してください。');
     }
   } catch (e) {
-    if (!tide && !_tideUserSelected) {
-      renderTidePageMsg('現在地を取得できませんでした。下の一覧から観測点を選択してください<div><button class="geo-btn" onclick="loadTidePage(true)">現在地を再試行</button></div>');
-    }
+    if (request === tideRequest) renderTidePageMsg('現在地を取得できませんでした。位置情報の許可を確認するか、下の一覧から観測点を選択してください。<div><button class="geo-btn" onclick="loadTidePage(true)">現在地を再試行</button></div>');
   }
 }
 
 // --- メイン ---
 let refreshing = false;
 
-async function refresh() {
-  if (refreshing) return;
-  refreshing = true;
-  const btn = document.getElementById('btn-refresh');
-  btn.classList.add('loading');
-
-  // 天気とニュースを並行
-  const geoPromise = loadGeoWeather(true).catch(e => console.warn('現在地天気:', e));
-  const weatherPromise = fetchWeather().then(async (items) => {
-    if (items.length > 0) {
-      await dbPut(STORE_WEATHER, items);
-      renderWeather(items);
-    }
-  }).catch(e => console.error('天気取得失敗:', e));
-
-  let allNews = [];
-  const newsPromise = (async () => {
-    for (let i = 0; i < NEWS_CATEGORIES.length; i++) {
-      const cat = NEWS_CATEGORIES[i];
-      try {
-        showProgress(`ニュース取得中... ${i + 1}/${NEWS_CATEGORIES.length} — ${cat.label}`);
-        const items = await fetchNewsCategory(cat);
-        allNews.push(...items);
-        renderNews(allNews);
-      } catch (e) {
-        console.warn(`ニュース取得失敗: ${cat.label}`, e);
-      }
-    }
-    // ユーザーが追加した任意サイト（RSS/Atom）
-    const feeds = await getCustomFeeds();
-    for (const feed of feeds) {
-      try {
-        showProgress(`サイト取得中... ${feed.name}`);
-        const items = await fetchCustomFeed(feed);
-        allNews.push(...items);
-        renderNews(allNews);
-      } catch (e) {
-        console.warn(`カスタムフィード取得失敗: ${feed.name}`, e);
-      }
-    }
-    if (allNews.length > 0) {
-      await dbClear(STORE_NEWS);
-      await dbPut(STORE_NEWS, allNews);
-    }
-  })();
-
-  await Promise.all([geoPromise, weatherPromise, newsPromise]);
-  showProgress('');
-
-  await dbPut(STORE_META, {
-    key: 'lastFetch',
-    slot: getTimeSlot(),
-    date: new Date().toDateString(),
-    timestamp: new Date().toISOString(),
-  });
-
-  updateStatus();
-  btn.classList.remove('loading');
-  refreshing = false;
-
-  // 本文をバックグラウンドで取得してオフライン保存（ボタンは先に解放）
-  if (allNews.length > 0 && navigator.onLine) {
-    prefetchBodies(allNews).catch(e => console.warn('本文取得失敗:', e));
+function renderDataState(kind, report) {
+  const el = document.getElementById(`${kind}-state`);
+  if (!el) return;
+  if (!report) { el.textContent = 'まだ取得状況を確認していません。更新ボタンで確認できます。'; return; }
+  const time = new Date(report.attemptAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const failed = report.failed || [];
+  const prefix = report.offline ? 'オフライン。' : '';
+  let message = `${prefix}${time} 確認：${report.successes}/${report.total} ${kind === 'news' ? '配信元' : '地域'}を取得。`;
+  if (failed.length) message += ` ${failed.join('・')}を取得できませんでした。該当する保存済みデータがあれば、そのデータを表示しています。`;
+  else if (kind === 'news' && report.empty) message += ' 配信元からの記事は0件でした。';
+  else message += ' 取得に成功しました。';
+  el.replaceChildren(document.createTextNode(message));
+  if (failed.length || report.offline) {
+    const button = document.createElement('button'); button.className = 'text-action'; button.textContent = '更新を再試行';
+    button.addEventListener('click', refresh); el.append(' ', button);
   }
 }
 
+async function refresh() {
+  if (refreshing) return;
+  if (addingFeed) { announce('サイトの追加が終わってから更新してください。'); return; }
+  if (!navigator.onLine) { announce('オフラインです。保存済みデータを表示しています。接続後に更新してください。'); return; }
+  refreshing = true;
+  const btn = document.getElementById('btn-refresh');
+  btn.classList.add('loading'); btn.disabled = true; btn.setAttribute('aria-busy', 'true');
+  const attemptAt = new Date().toISOString();
+  let freshNews = [], hasFailure = false;
+  try {
+    const newsTask = (async () => {
+      let allNews = await dbGetAll(STORE_NEWS);
+      const feeds = await getCustomFeeds();
+      const sources = [
+        ...NEWS_CATEGORIES.map(cat => ({ name: cat.label, fetch: () => fetchNewsCategory(cat), custom: false })),
+        ...feeds.map(feed => ({ name: feed.name, fetch: () => fetchCustomFeed(feed), custom: true, url: feed.url })),
+      ];
+      const report = { key: 'newsState', attemptAt, total: sources.length, successes: 0, failed: [], empty: false };
+      for (let i = 0; i < sources.length; i++) {
+        const source = sources[i];
+        showProgress(`ニュース取得中… ${i + 1}/${sources.length} — ${source.name}`);
+        try {
+          const items = (await source.fetch()).map(item => source.custom ? { ...item, feedUrl: source.url } : item);
+          allNews = allNews.filter(item => source.custom
+            ? !(item.custom && (item.feedUrl ? item.feedUrl === source.url : item.category === source.name))
+            : item.custom || item.category !== source.name);
+          allNews.push(...items); freshNews.push(...items); report.successes++;
+        } catch (e) { report.failed.push(source.name); }
+      }
+      report.empty = report.successes === report.total && allNews.length === 0;
+      await replaceStore(STORE_NEWS, allNews);
+      renderNews(allNews);
+      await dbPut(STORE_META, report); renderDataState('news', report);
+      return report.failed.length > 0;
+    })();
+    const weatherTask = (async () => {
+      const cached = await dbGetAll(STORE_WEATHER);
+      const items = await fetchWeather();
+      const allCodes = WEATHER_AREAS.flatMap(a => a.codes);
+      const got = new Set(items.map(item => item.region));
+      const report = { key: 'weatherState', attemptAt, total: allCodes.length, successes: items.length, failed: allCodes.filter(([code]) => !got.has(code)).map(([, name]) => name) };
+      const merged = [...cached.filter(item => !got.has(item.region)), ...items];
+      if (merged.length) { await dbPut(STORE_WEATHER, merged); renderWeather(merged); }
+      await dbPut(STORE_META, report); renderDataState('weather', report);
+      return report.failed.length > 0;
+    })();
+    const results = await Promise.allSettled([newsTask, weatherTask, loadGeoWeather(true)]);
+    hasFailure = results.some(r => r.status === 'rejected' || r.value === true);
+    await dbPut(STORE_META, { key: 'lastFetch', slot: getTimeSlot(), date: new Date().toDateString(), timestamp: attemptAt, failed: hasFailure });
+    if (results.some(r => r.status === 'rejected')) announce('一部の更新を完了できませんでした。保存済みデータを残しています。もう一度お試しください。');
+    await updateStatus();
+  } catch (e) { announce('更新を完了できませんでした。もう一度お試しください。'); }
+  finally {
+    showProgress(''); btn.classList.remove('loading'); btn.disabled = false; btn.removeAttribute('aria-busy'); refreshing = false;
+  }
+  if (freshNews.length && navigator.onLine) prefetchBodies(freshNews).catch(() => {});
+}
+
 async function loadCached() {
-  const [newsItems, weatherItems, geo] = await Promise.all([
-    dbGetAll(STORE_NEWS),
-    dbGetAll(STORE_WEATHER),
-    dbGet(STORE_META, 'geoWeather'),
+  const [newsItems, weatherItems, geo, newsReport, weatherReport] = await Promise.all([
+    dbGetAll(STORE_NEWS), dbGetAll(STORE_WEATHER), dbGet(STORE_META, 'geoWeather'),
+    dbGet(STORE_META, 'newsState'), dbGet(STORE_META, 'weatherState'),
   ]);
-  renderNews(newsItems);
-  renderGeoWeather(geo || null);
-  renderWeather(weatherItems);
+  renderNews(newsItems); renderGeoWeather(geo || null); renderWeather(weatherItems);
+  renderDataState('news', newsReport ? { ...newsReport, offline: !navigator.onLine } : null);
+  renderDataState('weather', weatherReport ? { ...weatherReport, offline: !navigator.onLine } : null);
 }
 
 async function updateStatus() {
   const el = document.getElementById('status');
   const online = navigator.onLine;
   const meta = await dbGet(STORE_META, 'lastFetch');
-  const lastTime = meta ? new Date(meta.timestamp).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'なし';
-  el.textContent = `${online ? 'オンライン' : 'オフライン'} | 最終更新: ${lastTime}`;
+  const time = meta ? new Date(meta.timestamp).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '未確認';
+  el.textContent = `${online ? 'オンライン' : 'オフライン'} | 更新確認: ${time}${meta?.failed ? '（一部失敗）' : ''}`;
   el.className = `status ${online ? 'online' : 'offline'}`;
 }
 
 // --- タブ切替 ---
 const PANELS = ['news', 'weather', 'tide'];
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const panel = tab.dataset.panel;
-    PANELS.forEach(p => {
-      const el = document.getElementById('panel-' + p);
-      if (el) el.classList.toggle('active', panel === p);
-    });
-    if (panel === 'tide') loadTidePage(false);
+function activateTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => {
+    const selected = t === tab;
+    t.classList.toggle('active', selected); t.setAttribute('aria-selected', String(selected)); t.tabIndex = selected ? 0 : -1;
+  });
+  const panel = tab.dataset.panel;
+  PANELS.forEach(p => { const el = document.getElementById('panel-' + p); el.classList.toggle('active', panel === p); el.hidden = panel !== p; });
+  if (panel === 'tide') loadTidePage(false).catch(() => renderTidePageMsg('潮汐を表示できませんでした。タブを選び直してください。'));
+}
+const tabs = [...document.querySelectorAll('.tab')];
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => activateTab(tab));
+  tab.addEventListener('keydown', event => {
+    let target;
+    if (event.key === 'ArrowRight') target = tabs[(index + 1) % tabs.length];
+    else if (event.key === 'ArrowLeft') target = tabs[(index + tabs.length - 1) % tabs.length];
+    else if (event.key === 'Home') target = tabs[0];
+    else if (event.key === 'End') target = tabs[tabs.length - 1];
+    if (target) { event.preventDefault(); activateTab(target); target.focus(); }
   });
 });
 
