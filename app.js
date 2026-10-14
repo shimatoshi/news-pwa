@@ -681,8 +681,19 @@ function renderNews(newsItems) {
     (grouped[item.category] ||= []).push(item);
   });
 
+  // IndexedDBはID順で返すため、更新直後・再起動後とも同じ表示順に揃える。
+  const categoryOrder = NEWS_CATEGORIES.map(category => category.label);
+  const orderedGroups = Object.entries(grouped).sort(([a], [b]) => {
+    const aIndex = categoryOrder.indexOf(a), bIndex = categoryOrder.indexOf(b);
+    return (aIndex < 0 ? categoryOrder.length : aIndex)
+      - (bIndex < 0 ? categoryOrder.length : bIndex)
+      || a.localeCompare(b, 'ja');
+  });
   let html = '';
-  for (const [cat, items] of Object.entries(grouped)) {
+  for (const [cat, items] of orderedGroups) {
+    items.sort((a, b) => (Date.parse(b.pubDate) || 0) - (Date.parse(a.pubDate) || 0)
+      || String(a.id).localeCompare(String(b.id)));
+
     const isCustom = items[0] && items[0].custom;
     html += `<div class="news-category">
       <div class="cat-header${isCustom ? ' custom' : ''}">
