@@ -3,8 +3,8 @@
   "short_name": "ニュース天気",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#16213e",
+  "background_color": "#f3f6f7",
+  "theme_color": "#146853",
   "icons": [
     {
       "src": "icon-192.png",
