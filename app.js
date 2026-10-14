@@ -28,13 +28,13 @@ const WEATHER_AREAS = [
   { region: '沖縄', codes: [['471000','沖縄本島'],['473000','宮古島'],['474000','八重山']]},
 ];
 
-const CURRENTS_API_KEY = 'Bv9rfwwSo_5SIGS9p1wBlLGhD67QT7c8UQwWFEVo-JLPVSBT';
+// APIキー不要のYahooニュースRSS。
 const NEWS_CATEGORIES = [
-  { query: 'category=general', label: '総合' },
-  { query: 'category=politics', label: '政治' },
-  { query: 'category=technology', label: 'テクノロジー' },
-  { query: 'category=science', label: '科学' },
-  { query: 'category=business', label: '経済' },
+  { feed: 'top-picks', label: '総合' },
+  { feed: 'domestic', label: '国内' },
+  { feed: 'it', label: 'テクノロジー' },
+  { feed: 'science', label: '科学' },
+  { feed: 'business', label: '経済' },
 ];
 
 const WEATHER_CODES = {
@@ -188,21 +188,16 @@ async function fetchWithTimeout(url, options = {}) {
 
 // --- フェッチ ---
 async function fetchNewsCategory(cat) {
-  const url = `https://api.currentsapi.services/v1/latest-news?language=ja&${cat.query}&apiKey=${CURRENTS_API_KEY}`;
-  const res = await fetchWithTimeout(url);
-  if (!res.ok) throw new Error('ニュースを取得できません');
-  const data = await res.json();
-  if (data.status !== 'ok' || !Array.isArray(data.news)) throw new Error('ニュースの応答を読み取れません');
-  return data.news.map((item, i) => ({
-    id: `${cat.label}-${i}`,
-    title: (item.title || '').replace(/ - [^-]+$/, ''),
-    link: item.url || '',
-    pubDate: item.published || '',
-    description: item.description || '',
-    source: item.author || '',
-    category: cat.label,
-    image: cleanImageUrl(item.image),
-    fetchedAt: new Date().toISOString(),
+  const res = await fetchWithTimeout(`/api/feed?category=${encodeURIComponent(cat.feed)}`);
+  if (!res.ok) throw new Error(`RSS取得エラー（HTTP ${res.status}）`);
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  if (doc.querySelector('parsererror') || !doc.querySelector('rss, feed, RDF')) {
+    throw new Error('RSSの形式が不正です');
+  }
+  return parseFeed(xml, cat.label).map(item => ({
+    ...item, custom: false, source: 'Yahoo!ニュース',
+    id: `${cat.label}-${item.link}`,
   }));
 }
 
@@ -475,9 +470,11 @@ async function prefetchBodies(items) {
 }
 
 async function fetchPrefWeather(code, name) {
+  // 十勝の独立予報ファイルはなく、釧路・根室のファイルに同梱される。
+  const forecastCode = code === '014030' ? '014100' : code;
   // 天気予報と警報・注意報を並行取得（警報は失敗しても天気は出す）
   const [res, warn] = await Promise.all([
-    fetchWithTimeout(`https://www.jma.go.jp/bosai/forecast/data/forecast/${code}.json`),
+    fetchWithTimeout(`https://www.jma.go.jp/bosai/forecast/data/forecast/${forecastCode}.json`),
     fetchWarnings(code).catch(() => null),
   ]);
   if (!res.ok) return null;
@@ -501,7 +498,9 @@ async function fetchPrefWeather(code, name) {
       }
     }
 
-    subAreas = ts0.areas.map(a => ({
+    const areaMatches = a => code === '014030' ? a.area.code === '014030'
+      : code === '014100' ? a.area.code !== '014030' : true;
+    subAreas = ts0.areas.filter(areaMatches).map(a => ({
       name: a.area.name,
       todayTomorrow: ts0.timeDefines.map((d, i) => ({
         date: d, weather: (a.weathers || [])[i] || '',
@@ -514,7 +513,8 @@ async function fetchPrefWeather(code, name) {
     // 気温（観測点＝予報地点ごと）: temps = [今日最低, 今日最高, 明日最低, 明日最高] 想定
     // code は気象庁の観測所コード（アメダステーブルで緯度経度に変換 → Open-Meteoで地点別週間予報）
     if (ts2) {
-      tempPoints = ts2.areas.map(a => {
+      tempPoints = ts2.areas.filter(a => code === '014030' ? a.area.name === '帯広'
+        : code === '014100' ? a.area.name !== '帯広' : true).map(a => {
         const t = a.temps || [];
         return { name: a.area.name, code: a.area.code, min: t[0] || '', max: t[1] || '', weekly: [], hourly: [] };
       });
@@ -1476,6 +1476,7 @@ function renderDataState(kind, report) {
   if (failed.length) message += ` ${failed.join('・')}を取得できませんでした。該当する保存済みデータがあれば、そのデータを表示しています。`;
   else if (kind === 'news' && report.empty) message += ' 配信元からの記事は0件でした。';
   else message += ' 取得に成功しました。';
+  if (report.errors?.length) message += ` 詳細：${report.errors.join(' / ')}`;
   el.replaceChildren(document.createTextNode(message));
   if (failed.length || report.offline) {
     const button = document.createElement('button'); button.className = 'text-action'; button.textContent = '更新を再試行';
@@ -1494,7 +1495,7 @@ async function refresh() {
   let freshNews = [], hasFailure = false;
   try {
     const newsTask = (async () => {
-      let allNews = await dbGetAll(STORE_NEWS);
+      let allNews = (await dbGetAll(STORE_NEWS)).filter(item => item.custom || item.category !== '政治');
       const feeds = await getCustomFeeds();
       const sources = [
         ...NEWS_CATEGORIES.map(cat => ({ name: cat.label, fetch: () => fetchNewsCategory(cat), custom: false })),
@@ -1510,7 +1511,7 @@ async function refresh() {
             ? !(item.custom && (item.feedUrl ? item.feedUrl === source.url : item.category === source.name))
             : item.custom || item.category !== source.name);
           allNews.push(...items); freshNews.push(...items); report.successes++;
-        } catch (e) { report.failed.push(source.name); }
+        } catch (e) { report.failed.push(source.name); (report.errors ||= []).push(`${source.name}：${e.message || '取得失敗'}`); }
       }
       report.empty = report.successes === report.total && allNews.length === 0;
       await replaceStore(STORE_NEWS, allNews);

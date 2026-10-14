@@ -6,9 +6,36 @@
 <title>ニュース & 天気</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#146853">
+<script>
+// 描画前に設定を適用し、起動時の白い画面を抑える。
+try {
+  const saved = localStorage.getItem('news-theme');
+  document.documentElement.dataset.theme = saved === 'dark' || saved === 'light'
+    ? saved : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+} catch (_) { document.documentElement.dataset.theme = 'light'; }
+</script>
 <style>
 /* Reading-first interface. Data, storage and interaction logic remain in app.js. */
 :root { --ink:#192b37; --muted:#526674; --paper:#fff; --canvas:#f3f6f7; --line:#dce5e9; --accent:#146853; --soft:#e8f3ee; --blue:#165d89; --chrome-height:150px; }
+html { color-scheme:light; }
+html[data-theme="dark"] { color-scheme:dark; --ink:#e3edf3; --muted:#adbeca; --paper:#18232d; --canvas:#101820; --line:#354653; --accent:#86d9b9; --soft:#203d35; --blue:#8ecbf0; }
+.header-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.theme-toggle { min-width:44px; min-height:44px; border:1px solid var(--line); border-radius:8px; background:var(--paper); color:var(--ink); font-size:22px; cursor:pointer; }
+html[data-theme="dark"] .btn-refresh,html[data-theme="dark"] .sf-add { color:#10251c; }
+html[data-theme="dark"] .data-state,html[data-theme="dark"] .notice { background:#202f3a; }
+html[data-theme="dark"] .cat-header .count,html[data-theme="dark"] .area-count { background:#283946; }
+html[data-theme="dark"] .news-header:hover { background:var(--soft); }
+html[data-theme="dark"] .reader-bar { background:var(--paper); }
+html[data-theme="dark"] .hi,html[data-theme="dark"] .hourly-temp,html[data-theme="dark"] .day-name.sun { color:#ff9f8c; }
+html[data-theme="dark"] .form-error { color:#ff9f8c; }
+html[data-theme="dark"] .feed-del:hover { color:#ffb5ac; background:#512c2c; }
+html[data-theme="dark"] .warn-special { background:#4e2334; color:#ffb0c9; }
+html[data-theme="dark"] .warn-warning { background:#4b3021; color:#ffc08a; }
+html[data-theme="dark"] .warn-advisory { background:#413b20; color:#f3da7f; }
+html[data-theme="dark"] .tide-k.high { background:#203e51; }
+html[data-theme="dark"] .tide-k.low { background:#44351f; color:#f5ce8b; }
+html[data-theme="dark"] .tide-spark { background:repeating-linear-gradient(to top,transparent 0,transparent 24px,var(--line) 24px,var(--line) 25px); }
+@media (max-width:380px) { header { flex-wrap:wrap; } .header-actions { margin-left:auto; } }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Noto Sans JP',Meiryo,sans-serif; background:var(--canvas); color:var(--ink); min-height:100vh; line-height:1.65; padding-bottom:64px; }
 button,input,textarea { font:inherit; }
@@ -233,7 +260,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible,t
 <header>
   <div class="brand"><div class="brand-kicker">DAILY / NEWS · WEATHER · TIDE</div><h1>ニュース & 天気</h1>
   <div class="status" id="status">確認中...</div></div>
-  <button class="btn-refresh" id="btn-refresh" title="更新" aria-label="ニュースと天気を更新"><span class="refresh-icon" aria-hidden="true">↻</span><span>更新</span></button>
+  <div class="header-actions"><button class="theme-toggle" id="theme-toggle" type="button" aria-label="ダークモード切り替え" aria-pressed="false">☾</button>
+  <button class="btn-refresh" id="btn-refresh" title="更新" aria-label="ニュースと天気を更新"><span class="refresh-icon" aria-hidden="true">↻</span><span>更新</span></button></div>
 </header>
 <div class="tabs" role="tablist" aria-label="表示する情報">
   <button id="tab-news" class="tab active" role="tab" aria-selected="true" aria-controls="panel-news" data-panel="news"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h3M8 18h8"/></svg>ニュース</button>
@@ -281,6 +309,36 @@ button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible,t
   <div class="reader-content"></div>
 </div>
 
+<script>
+(() => {
+  const root = document.documentElement;
+  const button = document.getElementById('theme-toggle');
+  const media = matchMedia('(prefers-color-scheme: dark)');
+  const apply = theme => {
+    root.dataset.theme = theme;
+    const dark = theme === 'dark';
+    button.textContent = dark ? '☀' : '☾';
+    button.setAttribute('aria-pressed', String(dark));
+    button.setAttribute('aria-label', dark ? 'ライトモードに切り替え' : 'ダークモードに切り替え');
+    button.title = button.getAttribute('aria-label');
+    document.querySelector('meta[name="theme-color"]').content = dark ? '#18232d' : '#146853';
+  };
+  apply(root.dataset.theme || 'light');
+  button.addEventListener('click', () => {
+    const theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    apply(theme);
+    try { localStorage.setItem('news-theme', theme); } catch (_) {}
+  });
+  media.addEventListener('change', event => {
+    try { if (localStorage.getItem('news-theme')) return; } catch (_) {}
+    apply(event.matches ? 'dark' : 'light');
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'news-theme') apply(event.newValue === 'dark' || event.newValue === 'light'
+      ? event.newValue : (media.matches ? 'dark' : 'light'));
+  });
+})();
+</script>
 <script src="readability.js"></script>
 <script src="app.js"></script>
 <script src="debug-note.js" data-app="news-pwa"></script>

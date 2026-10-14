@@ -1,4 +1,4 @@
-const CACHE_NAME = 'news-weather-v12';
+const CACHE_NAME = 'news-weather-v13';
 const STATIC_ASSETS = ['./', './index.html', './app.js', './readability.js', './manifest.json', './tide-stations.json', './debug-note.js'];
 
 self.addEventListener('install', (event) => {
@@ -15,6 +15,8 @@ self.addEventListener('activate', (event) => {
 
 // ネットワーク優先、失敗時キャッシュ
 self.addEventListener('fetch', (event) => {
+  // RSSは短いHTTPキャッシュを使い、SWに古い配信を残さない。
+  if (new URL(event.request.url).pathname === '/api/feed') return;
   event.respondWith(
     fetch(event.request)
       .then(res => {
