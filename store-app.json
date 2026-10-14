@@ -1,0 +1,11 @@
+{
+  "id": "news-pwa",
+  "type": "pwa",
+  "app": {
+    "name": "News",
+    "icon": "https://raw.githubusercontent.com/shimatoshi/app-store-releases/main/icons/news-pwa.png",
+    "description": "ニュースPWA",
+    "category": "情報",
+    "url": "https://news-pwa-rho.vercel.app"
+  }
+}
