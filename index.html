@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>ニュース & 天気</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#963d38">
+<meta name="theme-color" content="#2563eb">
 <script>
 // 描画前に設定を適用し、起動時の白い画面を抑える。
 try {
@@ -20,10 +20,14 @@ try {
 <a class="skip-link" href="#main-content">本文へスキップ</a>
 <div class="app-chrome">
 <header>
-  <div class="brand"><span class="brand-mark" aria-hidden="true">n.</span><div class="brand-kicker">YOUR DAILY JOURNAL</div><h1>ニュースと、日々。</h1>
-  <div class="status" id="status">確認中...</div></div>
-  <div class="header-actions"><button class="theme-toggle" id="theme-toggle" type="button" aria-label="ダークモード切り替え" aria-pressed="false">☾</button>
-  <button class="btn-refresh" id="btn-refresh" title="更新" aria-label="ニュースと天気を更新"><span class="refresh-icon" aria-hidden="true">↻</span><span>更新</span></button></div>
+  <div class="brand"><h1>ニュース &amp; 天気</h1><div class="status" id="status">確認中...</div></div>
+  <div class="header-actions">
+    <button class="btn-refresh" id="btn-refresh" title="更新" aria-label="ニュースと天気を更新"><span class="refresh-icon" aria-hidden="true">↻</span><span>更新</span></button>
+    <details class="settings-menu" id="settings-menu"><summary>設定</summary><div class="settings-content">
+      <div class="theme-setting"><span>表示モード</span><button class="theme-toggle" id="theme-toggle" type="button" aria-label="ダークモード切り替え" aria-pressed="false">☾</button></div>
+      <div id="news-tools"></div>
+    </div></details>
+  </div>
 </header>
 <div class="tabs" role="tablist" aria-label="表示する情報">
   <button id="tab-news" class="tab active" role="tab" aria-selected="true" aria-controls="panel-news" data-panel="news"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h3M8 18h8"/></svg>ニュース</button>
@@ -34,30 +38,25 @@ try {
 <div id="progress" role="status" aria-live="polite" style="display:none;"></div>
 <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 <main class="content" id="main-content" tabindex="-1">
-  <div class="edition-line"><span class="edition-label">THE DAILY EDITION</span><time id="edition-date"></time></div>
   <div id="panel-news" class="active" role="tabpanel" aria-labelledby="tab-news">
-    <div class="panel-intro"><div class="eyebrow">TODAY’S STORIES</div><h2>今日を、ひと読み。</h2><p>世の中のこと。気になること。自分のペースで。</p></div>
-    <div class="news-workspace">
-      <label class="news-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span class="sr-only">記事を検索</span><input id="news-search" type="search" placeholder="記事を検索" autocomplete="off"></label>
-      <div id="news-tools"></div>
-    </div>
     <div id="news-filters" role="group" aria-label="ニュースのカテゴリ"></div>
+    <details class="search-box"><summary>記事を検索</summary><label class="news-search"><span class="sr-only">記事を検索</span><input id="news-search" type="search" placeholder="見出し・配信元で検索" autocomplete="off"></label></details>
     <p id="news-summary" class="news-summary" role="status" aria-live="polite"></p>
     <div id="news-state" class="data-state" role="status" aria-live="polite"></div>
     <div id="news-list">
-      <div class="empty">データなし — 更新ボタンを押してください</div>
+      <div class="empty">データを読み込んでいます…</div>
     </div>
   </div>
   <div id="panel-weather" role="tabpanel" aria-labelledby="tab-weather" hidden>
-    <div class="panel-intro"><div class="eyebrow">WEATHER</div><h2>今日の空、この先の空。</h2><p>現在地や地域を選んで、今日から一週間の予報を。</p></div>
+    <h2 class="section-heading">天気予報</h2>
     <div id="weather-state" class="data-state" role="status" aria-live="polite"></div>
     <div id="geo-weather"></div>
     <div id="jma-weather">
-      <div class="empty">データなし — 更新ボタンを押してください</div>
+      <div class="empty">データを読み込んでいます…</div>
     </div>
   </div>
   <div id="panel-tide" role="tabpanel" aria-labelledby="tab-tide" hidden>
-    <div class="panel-intro"><div class="eyebrow">TIDE</div><h2>海のリズムを、知る。</h2><p>観測点を選んで、満潮・干潮と時間ごとの潮位を。</p></div>
+    <h2 class="section-heading">潮汐</h2>
     <div id="tide-page">
       <div id="tide-detail">
         <div class="tide-empty">現在地、または下の一覧から観測点を選ぶと潮汐を表示します
@@ -68,7 +67,6 @@ try {
     </div>
   </div>
 </main>
-<footer class="app-footer"><span>ニュースと、日々。 / NEWS · WEATHER · TIDE</span><span>保存済みの記事は、オフラインでも。</span></footer>
 
 <div id="reader" class="reader" role="dialog" aria-modal="true" aria-labelledby="reader-heading" hidden inert>
   <div class="reader-bar">
@@ -79,7 +77,6 @@ try {
 
 <script>
 (() => {
-  document.getElementById('edition-date').textContent = new Intl.DateTimeFormat('ja-JP', { year:'numeric', month:'long', day:'numeric', weekday:'long' }).format(new Date());
   const root = document.documentElement;
   const button = document.getElementById('theme-toggle');
   const media = matchMedia('(prefers-color-scheme: dark)');
@@ -90,7 +87,7 @@ try {
     button.setAttribute('aria-pressed', String(dark));
     button.setAttribute('aria-label', dark ? 'ライトモードに切り替え' : 'ダークモードに切り替え');
     button.title = button.getAttribute('aria-label');
-    document.querySelector('meta[name="theme-color"]').content = dark ? '#252421' : '#963d38';
+    document.querySelector('meta[name="theme-color"]').content = dark ? '#17191d' : '#2563eb';
   };
   apply(root.dataset.theme || 'light');
   button.addEventListener('click', () => {

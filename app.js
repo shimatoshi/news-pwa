@@ -661,7 +661,7 @@ async function shouldAutoFetch() {
 const newsById = {};
 const SAVED_BADGE = '<span class="offline-badge" title="オフライン保存済み"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h8v12l-4-3-4 3z"/></svg><span class="sr-only">オフライン保存済み</span></span>';
 let displayedNews = [];
-let selectedCategory = '';
+let selectedCategory = '総合';
 let newsQuery = '';
 
 function updateNewsFilters(newsItems) {
@@ -670,7 +670,7 @@ function updateNewsFilters(newsItems) {
   if (selectedCategory && !categories.includes(selectedCategory)) selectedCategory = '';
   const signature = JSON.stringify(categories);
   if (filters.dataset.categories !== signature) {
-    filters.innerHTML = ['', ...categories].map(category =>
+    filters.innerHTML = [...categories, ''].map(category =>
       `<button type="button" class="category-filter" data-category="${escapeHtml(category)}" aria-pressed="false">${escapeHtml(category || 'すべて')}</button>`
     ).join('');
     filters.dataset.categories = signature;
@@ -689,6 +689,7 @@ document.getElementById('news-filters').addEventListener('click', event => {
   if (!button) return;
   selectedCategory = button.dataset.category;
   renderNews();
+  window.scrollTo(0, 0);
 });
 
 function escapeHtml(s) {
@@ -734,7 +735,7 @@ function renderNews(newsItems = displayedNews) {
 
     const isCustom = items[0] && items[0].custom;
     html += `<div class="news-category">
-      <div class="cat-header${isCustom ? ' custom' : ''}">
+      <div ${selectedCategory ? 'hidden' : ''} class="cat-header${isCustom ? ' custom' : ''}">
         <h2>${escapeHtml(cat)}</h2>
         <span class="count">${items.length}件</span>
       </div>`;
@@ -1608,19 +1609,26 @@ async function updateStatus() {
   const online = navigator.onLine;
   const meta = await dbGet(STORE_META, 'lastFetch');
   const time = meta ? new Date(meta.timestamp).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '未確認';
-  el.textContent = `${online ? 'オンライン' : 'オフライン'} | 更新確認: ${time}${meta?.failed ? '（一部失敗）' : ''}`;
+  el.textContent = !online ? 'オフライン・保存済みデータ' : meta?.failed ? '一部の更新に失敗' : meta ? `${new Date(meta.timestamp).toLocaleTimeString('ja-JP', { hour:'2-digit', minute:'2-digit' })} 更新` : '未更新';
+  el.title = `更新確認: ${time}`;
   el.className = `status ${online ? 'online' : 'offline'}`;
 }
 
 // --- タブ切替 ---
 const PANELS = ['news', 'weather', 'tide'];
+const panelScroll = { news:0, weather:0, tide:0 };
 function activateTab(tab) {
+  const previous = document.querySelector('.tab.active');
+  if (previous === tab) return;
+  if (previous) panelScroll[previous.dataset.panel] = window.scrollY;
   document.querySelectorAll('.tab').forEach(t => {
     const selected = t === tab;
     t.classList.toggle('active', selected); t.setAttribute('aria-selected', String(selected)); t.tabIndex = selected ? 0 : -1;
   });
   const panel = tab.dataset.panel;
   PANELS.forEach(p => { const el = document.getElementById('panel-' + p); el.classList.toggle('active', panel === p); el.hidden = panel !== p; });
+  window.scrollTo(0, panelScroll[panel]);
+  document.getElementById('settings-menu').open = false;
   if (panel === 'tide') loadTidePage(false).catch(() => renderTidePageMsg('潮汐を表示できませんでした。タブを選び直してください。'));
 }
 const tabs = [...document.querySelectorAll('.tab')];
@@ -1634,6 +1642,20 @@ tabs.forEach((tab, index) => {
     else if (event.key === 'End') target = tabs[tabs.length - 1];
     if (target) { event.preventDefault(); activateTab(target); target.focus(); }
   });
+});
+
+const settingsMenu = document.getElementById('settings-menu');
+document.addEventListener('click', event => {
+  if (settingsMenu.open && !settingsMenu.contains(event.target)) settingsMenu.open = false;
+});
+settingsMenu.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    settingsMenu.open = false;
+    settingsMenu.querySelector('summary').focus();
+  }
+});
+document.querySelector('.search-box').addEventListener('toggle', event => {
+  if (event.currentTarget.open) document.getElementById('news-search').focus({ preventScroll:true });
 });
 
 // --- 初期化 ---

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'news-weather-v14';
+const CACHE_NAME = 'news-weather-v15';
 const STATIC_ASSETS = ['./', './index.html', './app.js', './styles.css', './readability.js', './manifest.json', './tide-stations.json', './debug-note.js'];
 
 self.addEventListener('install', (event) => {
