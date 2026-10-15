@@ -6,7 +6,18 @@
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.Light">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
         <receiver
             android:name=".TideWidgetProvider"
