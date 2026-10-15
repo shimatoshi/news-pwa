@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">天気と潮位</string>
+    <string name="widget_desc">天気と、登録した地点の潮位・潮回りを表示します</string>
+</resources>
