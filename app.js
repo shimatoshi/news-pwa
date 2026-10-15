@@ -81,7 +81,6 @@ const WARNING_CODES = {
   '23': ['低温注意報', 'advisory'], '24': ['霜注意報', 'advisory'], '25': ['着氷注意報', 'advisory'], '26': ['着雪注意報', 'advisory'],
 };
 
-const CAT_ICONS = { '総合': '📰', '政治': '🏛️', 'テクノロジー': '💻', '科学': '🔬', '経済': '💹' };
 const DOW = ['日','月','火','水','木','金','土'];
 
 // --- IndexedDB（シングルトン接続） ---
@@ -660,6 +659,37 @@ async function shouldAutoFetch() {
 
 // --- 表示 ---
 const newsById = {};
+const SAVED_BADGE = '<span class="offline-badge" title="オフライン保存済み"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h8v12l-4-3-4 3z"/></svg><span class="sr-only">オフライン保存済み</span></span>';
+let displayedNews = [];
+let selectedCategory = '';
+let newsQuery = '';
+
+function updateNewsFilters(newsItems) {
+  const filters = document.getElementById('news-filters');
+  const categories = [...new Set([...NEWS_CATEGORIES.map(cat => cat.label), ...newsItems.map(item => item.category)])];
+  if (selectedCategory && !categories.includes(selectedCategory)) selectedCategory = '';
+  const signature = JSON.stringify(categories);
+  if (filters.dataset.categories !== signature) {
+    filters.innerHTML = ['', ...categories].map(category =>
+      `<button type="button" class="category-filter" data-category="${escapeHtml(category)}" aria-pressed="false">${escapeHtml(category || 'すべて')}</button>`
+    ).join('');
+    filters.dataset.categories = signature;
+  }
+  filters.querySelectorAll('button').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.category === selectedCategory));
+  });
+}
+
+document.getElementById('news-search').addEventListener('input', event => {
+  newsQuery = event.target.value.trim().normalize('NFKC').toLocaleLowerCase('ja');
+  renderNews();
+});
+document.getElementById('news-filters').addEventListener('click', event => {
+  const button = event.target.closest('[data-category]');
+  if (!button) return;
+  selectedCategory = button.dataset.category;
+  renderNews();
+});
 
 function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, c => (
@@ -667,14 +697,22 @@ function escapeHtml(s) {
   ));
 }
 
-function renderNews(newsItems) {
+function renderNews(newsItems = displayedNews) {
   const panel = document.getElementById('news-list');
   if (!panel) return;
+  displayedNews = newsItems || [];
+  updateNewsFilters(displayedNews);
+  for (const item of displayedNews) newsById[item.id] = item;
+  newsItems = displayedNews.filter(item => (!selectedCategory || item.category === selectedCategory)
+    && (!newsQuery || `${item.title || ''} ${item.source || ''}`.normalize('NFKC').toLocaleLowerCase('ja').includes(newsQuery)));
+  document.getElementById('news-summary').textContent = displayedNews.length
+    ? `${selectedCategory || 'すべてのニュース'} · ${newsItems.length}件${newsQuery ? 'の検索結果' : ''}` : '';
   if (!newsItems || newsItems.length === 0) {
-    panel.innerHTML = '<div class="empty">表示できるニュースはありません。<br>更新を試すか、サイトを追加してください。</div>';
+    panel.innerHTML = displayedNews.length
+      ? '<div class="empty">該当する記事がありません。<br>検索語やカテゴリを変えてみてください。</div>'
+      : '<div class="empty">まだ記事がありません。<br>右上の「更新」で、今日のニュースを受け取れます。</div>';
     return;
   }
-  for (const item of newsItems) newsById[item.id] = item;
 
   const grouped = {};
   newsItems.forEach(item => {
@@ -697,12 +735,12 @@ function renderNews(newsItems) {
     const isCustom = items[0] && items[0].custom;
     html += `<div class="news-category">
       <div class="cat-header${isCustom ? ' custom' : ''}">
-        <h2>${isCustom ? '🔗' : (CAT_ICONS[cat] || '📄')} ${escapeHtml(cat)}</h2>
+        <h2>${escapeHtml(cat)}</h2>
         <span class="count">${items.length}件</span>
       </div>`;
     for (const item of items) {
       const date = item.pubDate ? new Date(item.pubDate).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-      const saved = item.body ? '<span class="offline-badge" title="オフライン保存済み">📥</span>' : '';
+      const saved = item.body ? SAVED_BADGE : '';
       const thumb = item.image ? `<img class="news-thumb" data-id="${escapeHtml(item.id)}" src="${escapeHtml(item.image)}" loading="lazy" alt="" onerror="this.remove()">` : '';
       html += `<div class="news-item" data-id="${escapeHtml(item.id)}">
           <button class="news-header" onclick="openReader(this.closest('.news-item').dataset.id)">
@@ -757,6 +795,7 @@ async function openReader(id) {
   overlay.classList.add('open');
   document.querySelector('.app-chrome').inert = true;
   document.querySelector('.content').inert = true;
+  document.querySelector('.skip-link').inert = true;
   document.getElementById('btn-refresh').inert = true;
   document.getElementById('notice').inert = true;
   document.getElementById('dbgn-btn')?.setAttribute('inert', '');
@@ -789,6 +828,7 @@ function closeReader() {
   reader.inert = true;
   document.querySelector('.app-chrome').inert = false;
   document.querySelector('.content').inert = false;
+  document.querySelector('.skip-link').inert = false;
   document.getElementById('btn-refresh').inert = false;
   document.getElementById('notice').inert = false;
   document.getElementById('dbgn-btn')?.removeAttribute('inert');
@@ -810,7 +850,7 @@ document.getElementById('reader').addEventListener('keydown', event => {
 function markSaved(id) {
   const el = document.querySelector(`.news-item[data-id="${CSS.escape(id)}"] .meta`);
   if (el && !el.querySelector('.offline-badge')) {
-    el.insertAdjacentHTML('beforeend', '<span class="offline-badge" title="オフライン保存済み">📥</span>');
+    el.insertAdjacentHTML('beforeend', SAVED_BADGE);
   }
 }
 
